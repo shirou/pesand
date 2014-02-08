@@ -106,12 +106,12 @@ func (c *Connection) handleSubscribe(m *proto.Subscribe) {
 		suback.TopicsQos[i] = proto.QosAtMostOnce
 	}
 	c.submit(suback)
-	/*
-		// Process retained messages.
-		for _, tq := range m.Topics {
-				c.broker.subs.sendRetain(tq.Topic, c)
-			}
-	*/
+	// Process retained messages.
+	for _, tq := range m.Topics {
+		if pubmsg, ok := c.broker.storage.GetRetain(tq.Topic); ok {
+			c.submit(pubmsg)
+		}
+	}
 }
 
 func (c *Connection) handleUnsubscribe(m *proto.Unsubscribe) {
@@ -171,6 +171,11 @@ func (c *Connection) handlePublish(m *proto.Publish) {
 		return
 	}
 	c.broker.Publish(m)
+
+	if m.Header.Retain {
+		c.broker.UpdateRetain(m)
+		log.Printf("Publish msg retained: %s", m.TopicName)
+	}
 	c.submit(&proto.PubAck{MessageId: m.MessageId})
 }
 

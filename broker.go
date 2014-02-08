@@ -48,7 +48,6 @@ func (b *Broker) Start() {
 func (b *Broker) Publish(m *proto.Publish) {
 	topic := m.TopicName
 	topics, _ := ExpandTopics(topic)
-	log.Println(topics)
 	for _, t := range topics {
 		go func(t string) {
 			for _, clientid := range b.storage.GetTopicClientList(t) {
@@ -57,6 +56,17 @@ func (b *Broker) Publish(m *proto.Publish) {
 			}
 		}(t)
 	}
+}
+
+func (b *Broker) UpdateRetain(m *proto.Publish) {
+	topics, _ := ExpandTopics(m.TopicName)
+	for _, t := range topics {
+		b.storage.UpdateRetain(t, m)
+	}
+}
+func (b *Broker) GetRetain(topic string) (*proto.Publish, bool) {
+	m, ok := b.storage.GetRetain(topic)
+	return m, ok
 }
 
 func (b *Broker) Subscribe(topic string, conn *Connection) {

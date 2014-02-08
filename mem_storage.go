@@ -10,6 +10,7 @@ type MemStorage struct {
 	clientsMu  sync.Mutex
 	clients    map[string]*Connection // clientid -> list of Connection
 	TopicTable map[string][]string    // topic -> list of clientid
+	RetainMap  map[string]*proto.Publish
 }
 
 func (mem *MemStorage) MergeClient(clientid string, conn *Connection) (*Connection, error) {
@@ -61,10 +62,20 @@ func (mem *MemStorage) Unsubscribe(topic string, clientid string) {
 	// TODO
 }
 
+func (mem *MemStorage) UpdateRetain(topic string, m *proto.Publish) {
+	//does not need lock or check exists. just update it
+	mem.RetainMap[topic] = m
+}
+func (mem *MemStorage) GetRetain(topic string) (*proto.Publish, bool) {
+	m, ok := mem.RetainMap[topic]
+	return m, ok
+}
+
 func NewMemStorage() *MemStorage {
 	s := &MemStorage{
 		clients:    make(map[string]*Connection),
 		TopicTable: make(map[string][]string),
+		RetainMap:  make(map[string]*proto.Publish),
 	}
 	return s
 }
