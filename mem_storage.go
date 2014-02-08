@@ -50,8 +50,8 @@ func (mem *MemStorage) GetTopicClientList(topic string) []string {
 	return mem.TopicTable[topic]
 }
 
-func (mem *MemStorage) GetClientConnection(topic string) *Connection {
-	return mem.clients[topic]
+func (mem *MemStorage) GetClientConnection(clientid string) *Connection {
+	return mem.clients[clientid]
 }
 
 func (mem *MemStorage) Subscribe(topic string, clientid string) {
