@@ -73,3 +73,11 @@ func (b *Broker) Subscribe(topic string, conn *Connection) {
 	log.Printf("Subscribe: %s on %s", topic, conn.clientid)
 	b.storage.Subscribe(topic, conn.clientid)
 }
+
+func (b *Broker) Unsubscribe(topic string, conn *Connection) {
+	log.Printf("UnSubscribe: %s on %s", topic, conn.clientid)
+	topics, _ := ExpandTopics(topic)
+	for _, t := range topics {
+		b.storage.Unsubscribe(t, conn.clientid)
+	}
+}

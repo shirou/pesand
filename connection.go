@@ -115,10 +115,9 @@ func (c *Connection) handleSubscribe(m *proto.Subscribe) {
 }
 
 func (c *Connection) handleUnsubscribe(m *proto.Unsubscribe) {
-	/*	for _, t := range m.Topics {
-			c.broker.subs.unsub(t, c)
-		}
-	*/
+	for _, t := range m.Topics {
+		c.broker.Unsubscribe(t, c)
+	}
 	ack := &proto.UnsubAck{MessageId: m.MessageId}
 	c.submit(ack)
 }

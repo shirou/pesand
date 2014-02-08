@@ -10,6 +10,7 @@ type Storage interface {
 	GetTopicClientList(string) []string
 	GetClientConnection(topic string) *Connection
 	Subscribe(topic string, clientid string)
+	Unsubscribe(topic string, clientid string)
 	UpdateRetain(topic string, m *proto.Publish)
 	GetRetain(topic string) (*proto.Publish, bool)
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	proto "github.com/huin/mqtt"
+	"reflect"
 	"testing"
 )
 
@@ -69,8 +70,38 @@ func TestUpdateRetain(t *testing.T) {
 
 }
 
-func TestGetRetain(t *testing.T) {
-	//	var topic string
+func TestSubscribe(t *testing.T) {
+	var topic string
+	var cid string
+	var cid2 string
+	mem := NewMemStorage()
 
-	//	topic = "/a/b/c"
+	topic = "/a/b/c"
+
+	cid = "cid1"
+	mem.Subscribe(topic, cid)
+	if reflect.DeepEqual(mem.TopicTable[topic], []string{cid}) != true {
+		t.Errorf("clientid not found: %v", cid)
+	}
+
+	cid2 = "cid2"
+	mem.Subscribe(topic, cid2)
+	if reflect.DeepEqual(mem.TopicTable[topic], []string{cid, cid2}) != true {
+		t.Errorf("clientid not found: %v", cid2)
+	}
+
+	mem.Unsubscribe(topic, cid)
+	for _, c := range mem.TopicTable[topic] {
+		if c == cid {
+			t.Errorf("Unsubscribed id found: %v", cid)
+		}
+	}
+
+	mem.Unsubscribe(topic, cid2)
+	for _, c := range mem.TopicTable[topic] {
+		if c == cid2 {
+			t.Errorf("Unsubscribed id found: %v", cid2)
+		}
+	}
+
 }

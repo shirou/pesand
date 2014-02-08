@@ -59,7 +59,12 @@ func (mem *MemStorage) Subscribe(topic string, clientid string) {
 }
 
 func (mem *MemStorage) Unsubscribe(topic string, clientid string) {
-	// TODO
+	a := mem.TopicTable[topic]
+	for i, cid := range a {
+		if clientid == cid {
+			mem.TopicTable[topic] = append(a[:i], a[i+1:]...)
+		}
+	}
 }
 
 func (mem *MemStorage) UpdateRetain(topic string, m *proto.Publish) {
