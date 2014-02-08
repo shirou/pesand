@@ -28,13 +28,14 @@ const (
 )
 
 type Connection struct {
-	broker   *Broker
-	conn     net.Conn
-	clientid string
-	storage  Storage
-	jobs     chan job
-	Done     chan struct{}
-	Status   int
+	broker    *Broker
+	conn      net.Conn
+	clientid  string
+	storage   Storage
+	jobs      chan job
+	Done      chan struct{}
+	Status    int
+	TopicList []string // Subscribed topic list
 }
 
 type job struct {
@@ -78,7 +79,7 @@ func (c *Connection) handleConnection() {
 		case *proto.PingReq:
 			c.submit(&proto.PingResp{})
 		case *proto.Disconnect:
-			// finish this goroutine
+			c.handleDisconnect(m)
 			return
 		case *proto.Subscribe:
 			c.handleSubscribe(m)
@@ -104,6 +105,8 @@ func (c *Connection) handleSubscribe(m *proto.Subscribe) {
 		// TODO: Handle varying QoS correctly
 		c.broker.Subscribe(tq.Topic, c)
 		suback.TopicsQos[i] = proto.QosAtMostOnce
+
+		c.TopicList = append(c.TopicList, tq.Topic)
 	}
 	c.submit(suback)
 	// Process retained messages.
@@ -115,8 +118,8 @@ func (c *Connection) handleSubscribe(m *proto.Subscribe) {
 }
 
 func (c *Connection) handleUnsubscribe(m *proto.Unsubscribe) {
-	for _, t := range m.Topics {
-		c.broker.Unsubscribe(t, c)
+	for _, topic := range m.Topics {
+		c.broker.Unsubscribe(topic, c)
 	}
 	ack := &proto.UnsubAck{MessageId: m.MessageId}
 	c.submit(ack)
@@ -161,6 +164,12 @@ func (c *Connection) handleConnect(m *proto.Connect) {
 		clean = 1
 	}
 	log.Printf("New client connected from %v as %v (c%v, k%v).", currrent_c.conn.RemoteAddr(), currrent_c.clientid, clean, m.KeepAliveTimer)
+}
+
+func (c *Connection) handleDisconnect(m *proto.Disconnect) {
+	for _, topic := range c.TopicList {
+		c.broker.Unsubscribe(topic, c)
+	}
 }
 
 func (c *Connection) handlePublish(m *proto.Publish) {
