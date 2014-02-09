@@ -2,13 +2,15 @@ package main
 
 import (
 	"code.google.com/p/gcfg"
+	"time"
 )
 
 type Config struct {
 	Default struct {
-		DebugLevel string
-		Storage    string
-		Port       string
+		DebugLevel       string
+		Storage          string
+		Port             string
+		StatsIntervalSec time.Duration
 	}
 	Queue struct {
 		SendingQueueLength int

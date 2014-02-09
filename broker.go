@@ -8,24 +8,24 @@ import (
 )
 
 type Broker struct {
-	listen        net.Listener
-	Port          string
-	stats         Stats
-	storage       Storage
-	conf          *Config
-	Done          chan struct{}
-	StatsInterval time.Duration
+	listen           net.Listener
+	Port             string
+	stats            Stats
+	storage          Storage
+	conf             *Config
+	Done             chan struct{}
+	StatsIntervalSec time.Duration
 }
 
 func NewBroker(conf Config, listen net.Listener) *Broker {
 	broker := &Broker{
-		listen:        listen,
-		Port:          conf.Default.Port,
-		stats:         NewStats(),
-		storage:       NewMemStorage(),
-		conf:          &conf,
-		Done:          make(chan struct{}),
-		StatsInterval: time.Second * 10,
+		listen:           listen,
+		Port:             conf.Default.Port,
+		stats:            NewStats(),
+		storage:          NewMemStorage(),
+		conf:             &conf,
+		Done:             make(chan struct{}),
+		StatsIntervalSec: time.Second * conf.Default.StatsIntervalSec,
 	}
 	return broker
 }
@@ -40,12 +40,31 @@ func (b *Broker) Start() {
 			}
 			c := NewConnection(b, conn)
 			c.Start()
+			b.stats.clientConnect()
 		}
 		close(b.Done)
 	}()
+
+	// start the stats reporting goroutine
+	go func() {
+		for {
+			for _, m := range b.stats.GetStatsMessages(b.StatsIntervalSec) {
+				b.Publish(m)
+			}
+			select {
+			case <-b.Done:
+				return
+			default:
+				// keep going
+			}
+			time.Sleep(b.StatsIntervalSec)
+		}
+	}()
+
 }
 
 func (b *Broker) Publish(m *proto.Publish) {
+	b.stats.messageRecv()
 	topic := m.TopicName
 	topics, _ := ExpandTopics(topic)
 	for _, t := range topics {
@@ -53,6 +72,7 @@ func (b *Broker) Publish(m *proto.Publish) {
 			for _, clientid := range b.storage.GetTopicClientList(t) {
 				conn := b.storage.GetClientConnection(clientid)
 				conn.submit(m)
+				b.stats.messageSend()
 			}
 		}(t)
 	}

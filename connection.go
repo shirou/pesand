@@ -56,7 +56,7 @@ func (r receipt) wait() {
 func (c *Connection) handleConnection() {
 	defer func() {
 		c.conn.Close()
-		c.broker.stats.clientDisconnect(c)
+		c.broker.stats.clientDisconnect()
 		close(c.jobs)
 	}()
 
@@ -96,7 +96,7 @@ func (c *Connection) handleConnection() {
 
 func (c *Connection) handleSubscribe(m *proto.Subscribe) {
 	if m.Header.QosLevel != proto.QosAtLeastOnce {
-		// protocol error, disconnect
+		// protocol error, silent discarded(not disconnect)
 		return
 	}
 	suback := &proto.SubAck{
@@ -111,6 +111,7 @@ func (c *Connection) handleSubscribe(m *proto.Subscribe) {
 		c.TopicList = append(c.TopicList, tq.Topic)
 	}
 	c.submit(suback)
+
 	// Process retained messages.
 	for _, tq := range m.Topics {
 		if pubmsg, ok := c.broker.storage.GetRetain(tq.Topic); ok {
@@ -172,6 +173,7 @@ func (c *Connection) handleDisconnect(m *proto.Disconnect) {
 	for _, topic := range c.TopicList {
 		c.broker.Unsubscribe(topic, c)
 	}
+	c.broker.stats.clientDisconnect()
 }
 
 func (c *Connection) handlePublish(m *proto.Publish) {
