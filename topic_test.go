@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"testing"
 )
 
@@ -42,10 +41,35 @@ func TestIsValidTopic(t *testing.T) {
 
 }
 
+func checkInclude(target []string, s string) bool {
+	for _, c := range target {
+		if c == s {
+			return true
+		}
+	}
+	return false
+}
+
 func TestExpandTopic(t *testing.T) {
 	var topic string
 
 	topic = "/a/b/c"
 	ret, _ := ExpandTopics(topic)
-	fmt.Println(ret)
+	expected := []string{"/a/b/c", "/#", "/a/#", "/a/b/#", "/a/+/c"}
+	for _, s := range expected {
+		if checkInclude(ret, s) != true {
+			t.Errorf("%v is not included in %v", s, ret)
+		}
+	}
+
+	// not leading "/"
+	topic = "a/b/c"
+	ret, _ = ExpandTopics(topic)
+	expected = []string{"a/b/c", "#", "a/#", "a/b/#", "a/+/c"}
+	for _, s := range expected {
+		if checkInclude(ret, s) != true {
+			t.Errorf("%v is not included in %v", s, ret)
+		}
+	}
+
 }

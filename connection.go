@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"strings"
+	"time"
 )
 
 // ConnectionErrors is an array of errors corresponding to the
@@ -28,14 +29,15 @@ const (
 )
 
 type Connection struct {
-	broker    *Broker
-	conn      net.Conn
-	clientid  string
-	storage   Storage
-	jobs      chan job
-	Done      chan struct{}
-	Status    int
-	TopicList []string // Subscribed topic list
+	broker      *Broker
+	conn        net.Conn
+	clientid    string
+	storage     Storage
+	jobs        chan job
+	Done        chan struct{}
+	Status      int
+	TopicList   []string // Subscribed topic list
+	LastUpdated time.Time
 }
 
 type job struct {
@@ -243,26 +245,16 @@ func (c *Connection) writer() {
 func (c *Connection) Start() {
 	go c.handleConnection()
 	go c.writer()
-
-	/*
-		defer c.conn.Close()
-		reader := bufio.NewReader(c.conn)
-		for {
-			_, err := reader.ReadByte()
-			if err != nil {
-				return
-			}
-		}
-	*/
 }
 
 func NewConnection(b *Broker, conn net.Conn) *Connection {
 	c := &Connection{
-		broker:  b,
-		conn:    conn,
-		storage: b.storage,
-		jobs:    make(chan job, b.conf.Queue.SendingQueueLength),
-		Status:  ClientAvailable,
+		broker:      b,
+		conn:        conn,
+		storage:     b.storage,
+		jobs:        make(chan job, b.conf.Queue.SendingQueueLength),
+		Status:      ClientAvailable,
+		LastUpdated: time.Now(),
 		//		out:      make(chan job, clientQueueLength),
 		//		Incoming: make(chan *proto.Publish, clientQueueLength),
 		//		done:     make(chan struct{}),
