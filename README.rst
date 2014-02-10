@@ -4,6 +4,7 @@ Pesand
 MQTT 3.1 broker which supports
 
 - QoS 0
+- topic wildcard
 - Retain
 
 How to use
@@ -34,6 +35,16 @@ Configration
 Because this is not stable, not documented yet.
 
 
+Future work
+---------------------
+
+- QoS 1, 2
+- Will messages
+- LevelDB persistent storage
+- store sent messages
+- durable subscribe
+
+
 Naming
 --------------
 
@@ -45,9 +56,9 @@ The giants on whose shoulders this works stands
 
 - https://github.com/jeffallen/mqtt
 
-  The original architecture is based on jeffallen's code. So Many
-  thanks.  I just re-structured and added some of improvement.
+  The original architecture is based on jeffallen's code.  I just
+  re-structured and added some of improvement. Thank you.
 
 - https://github.com/hunin/mqtt
 
-  MQTT Protocol itself is used this code. Thank you!
+  MQTT Protocol itself is used this code. Thank you.
