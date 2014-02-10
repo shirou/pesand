@@ -78,6 +78,12 @@ func (c *Connection) handleConnection() {
 			c.handleConnect(m)
 		case *proto.Publish:
 			c.handlePublish(m)
+		case *proto.PubRel:
+			c.handlePubRel(m)
+		case *proto.PubRec:
+			c.handlePubRec(m)
+		case *proto.PubComp:
+			c.handlePubComp(m)
 		case *proto.PingReq:
 			c.submit(&proto.PingResp{})
 		case *proto.Disconnect:
@@ -173,22 +179,41 @@ func (c *Connection) handleDisconnect(m *proto.Disconnect) {
 	for _, topic := range c.TopicList {
 		c.broker.Unsubscribe(topic, c)
 	}
+	c.storage.DeleteClient(c.clientid, c)
 	c.broker.stats.clientDisconnect()
 }
 
 func (c *Connection) handlePublish(m *proto.Publish) {
-	// TODO: Proper QoS support
-	if m.Header.QosLevel != proto.QosAtMostOnce {
-		log.Printf("reader: no support for QoS %v yet", m.Header.QosLevel)
-		return
-	}
 	c.broker.Publish(m)
 
 	if m.Header.Retain {
 		c.broker.UpdateRetain(m)
 		log.Printf("Publish msg retained: %s", m.TopicName)
 	}
-	c.submit(&proto.PubAck{MessageId: m.MessageId})
+
+	switch m.Header.QosLevel {
+	case proto.QosAtLeastOnce:
+		// do nothing
+	case proto.QosAtMostOnce:
+		c.submit(&proto.PubAck{MessageId: m.MessageId})
+	case proto.QosExactlyOnce:
+		c.submit(&proto.PubRec{MessageId: m.MessageId})
+	default:
+		log.Printf("Wrong QosLevel on Publish")
+	}
+}
+
+func (c *Connection) handlePubRel(m *proto.PubRel) {
+	c.submit(&proto.PubComp{MessageId: m.MessageId})
+	log.Printf("PubComp sent")
+}
+
+func (c *Connection) handlePubRec(m *proto.PubRec) {
+	c.submit(&proto.PubRel{MessageId: m.MessageId})
+	log.Printf("PubRel sent")
+}
+func (c *Connection) handlePubComp(m *proto.PubComp) {
+	// TODO:
 }
 
 // Queue a message; no notification of sending is done.
