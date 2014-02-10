@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -38,11 +39,14 @@ type Connection struct {
 	Status      int
 	TopicList   []string // Subscribed topic list
 	LastUpdated time.Time
+	SendingMsgs *StoredQueue // msgs which not sent
+	SentMsgs    *StoredQueue // msgs which already sent
 }
 
 type job struct {
-	m proto.Message
-	r receipt
+	m           proto.Message
+	r           receipt
+	storedmsgid string
 }
 
 type receipt chan struct{}
@@ -236,35 +240,32 @@ func (c *Connection) submitSync(m proto.Message) receipt {
 }
 
 func (c *Connection) writer() {
-
-	// Close connection on exit in order to cause reader to exit.
 	defer func() {
 		c.conn.Close()
-		c.storage.DeleteClient(c.clientid, c)
-		//		c.svr.subs.unsubAll(c)
 	}()
 
 	for job := range c.jobs {
-		// TODO: write timeout
-		err := job.m.Encode(c.conn)
-		if job.r != nil {
-			// notifiy the sender that this message is sent
-			close(job.r)
-		}
-		if err != nil {
-			// This one is not interesting; it happens when clients
-			// disappear before we send their acks.
-			if err.Error() == "use of closed network connection" {
-				return
-			}
-			log.Print("writer: ", err)
-			return
-		}
-		//		c.svr.stats.messageSend()
-
+		// Disconnect msg is used for shutdown writer goroutine.
 		if _, ok := job.m.(*proto.Disconnect); ok {
 			log.Print("writer: sent disconnect message")
 			return
+		}
+
+		// TODO: write timeout
+		err := job.m.Encode(c.conn)
+
+		if err != nil {
+			log.Print("writer: ", err)
+			continue // Error does not shutdown Connection, wait re-connect
+		}
+		// if storedmsgid is set, (QoS 1 or 2,) move to sentQueue
+		if job.storedmsgid != "" {
+			c.SentMsgs.Put(job.storedmsgid)
+		}
+
+		if job.r != nil {
+			// TODO: QoS
+			close(job.r)
 		}
 	}
 }
@@ -282,6 +283,8 @@ func NewConnection(b *Broker, conn net.Conn) *Connection {
 		jobs:        make(chan job, b.conf.Queue.SendingQueueLength),
 		Status:      ClientAvailable,
 		LastUpdated: time.Now(),
+		SendingMsgs: NewStoredQueue(b.conf.Queue.SendingQueueLength),
+		SentMsgs:    NewStoredQueue(b.conf.Queue.SentQueueLength),
 		//		out:      make(chan job, clientQueueLength),
 		//		Incoming: make(chan *proto.Publish, clientQueueLength),
 		//		done:     make(chan struct{}),
@@ -289,4 +292,62 @@ func NewConnection(b *Broker, conn net.Conn) *Connection {
 		//		suback:   make(chan *proto.SubAck),
 	}
 	return c
+}
+
+type storedQueueNode struct {
+	storedMsgId string
+	next        *storedQueueNode
+}
+
+type StoredQueue struct {
+	head  *storedQueueNode
+	tail  *storedQueueNode
+	count int
+	max   int
+	lock  *sync.Mutex
+}
+
+func NewStoredQueue(max int) *StoredQueue {
+	return &StoredQueue{
+		lock: &sync.Mutex{},
+		max:  max,
+	}
+}
+
+func (q *StoredQueue) Len() int {
+	return q.count
+}
+
+func (q *StoredQueue) Put(storedMsgId string) {
+	q.lock.Lock()
+	defer q.lock.Unlock()
+
+	n := &storedQueueNode{storedMsgId: storedMsgId}
+
+	if q.tail == nil {
+		q.tail = n
+		q.head = n
+	} else {
+		q.tail.next = n
+		q.tail = n
+	}
+	q.count++
+
+	if q.count > q.max {
+		q.Get()
+	}
+}
+func (q *StoredQueue) Get() string {
+	q.lock.Lock()
+	defer q.lock.Unlock()
+
+	n := q.head
+	q.head = n.next
+
+	if q.head == nil {
+		q.tail = nil
+	}
+	q.count--
+
+	return n.storedMsgId
 }

@@ -105,3 +105,34 @@ func TestSubscribe(t *testing.T) {
 	}
 
 }
+func TestcreateStoredMsgId(t *testing.T) {
+	m := &proto.Publish{
+		Header: proto.Header{
+			DupFlag:  false,
+			QosLevel: proto.QosAtMostOnce,
+			Retain:   false,
+		},
+		TopicName: "/a/b/c",
+		Payload:   proto.BytesPayload{1, 2, 3},
+	}
+	if createStoredMsgId("a", m) != "a-0" {
+		t.Errorf("StoredMsgId creating failed with nomsg")
+	}
+
+	var msgid uint16
+	msgid = 1000
+	m2 := &proto.Publish{
+		Header: proto.Header{
+			DupFlag:  false,
+			QosLevel: proto.QosAtMostOnce,
+			Retain:   false,
+		},
+		MessageId: msgid,
+		TopicName: "/a/b/c",
+		Payload:   proto.BytesPayload{1, 2, 3},
+	}
+	if createStoredMsgId("a", m2) != "a-1000" {
+		t.Errorf("StoredMsgId creating failed")
+	}
+
+}

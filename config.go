@@ -14,6 +14,7 @@ type Config struct {
 	}
 	Queue struct {
 		SendingQueueLength int
+		SentQueueLength    int
 	}
 	LevelDB struct {
 		DBFile string
