@@ -25,7 +25,7 @@ var TopicExpandCache = make(map[string][]string, 0)
 
 func IsValidTopic(topic string) bool {
 	// A topic must be at least one character long.
-	if len(topic) == 0 {
+	if len(topic) == 0 || len(topic) > 65535 {
 		return false
 	}
 
