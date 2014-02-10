@@ -15,6 +15,8 @@ Install
 
 Download a binary of your architecture from dron.io.
 
+- https://drone.io/github.com/shirou/pesand/files
+
 or build by yourself.
 
 ::
