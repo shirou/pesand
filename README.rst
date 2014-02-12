@@ -45,6 +45,7 @@ Future work
 - LevelDB persistent storage
 - store sent messages
 - durable subscribe
+- websocket
 
 
 Naming

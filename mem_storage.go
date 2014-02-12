@@ -1,9 +1,11 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	proto "github.com/huin/mqtt"
 	"log"
+	"math/rand"
 	"sync"
 	"time"
 )
@@ -20,7 +22,7 @@ type MemStorage struct {
 }
 
 const (
-	StoredMsgSent int = 0
+	StoredMsgSent uint = 0
 	StoredMsgSending
 	StoredMsgWillBeDeleted
 )
@@ -56,21 +58,36 @@ func (mem *MemStorage) DeleteClient(clientid string, conn *Connection) error {
 
 // createStoredMsgId creates a uniq stored id from
 // publish msg. This is used as a key of StoredMessages.
-// <clientdi>-<msgid>
+// <clientdi>-<msgid>-<randint>
 // Note: QoS0 does not have a messageid, but it is not required to store.
 // so this func is not invoked.
 func createStoredMsgId(clientid string, m *proto.Publish) string {
-	return fmt.Sprintf("%s-%v", clientid, m.MessageId)
+	r := rand.Int()
+
+	return fmt.Sprintf("%s-%v-%v", clientid, m.MessageId, r)
 }
 
-func (mem *MemStorage) AddMsg(clientid string, m *proto.Publish) string {
-	// XXX: lock required?
+func (mem *MemStorage) StoreMsg(clientid string, m *proto.Publish) (storedMsgId string) {
+	storedMsgId = createStoredMsgId(clientid, m)
 
-	return ""
+	s := &StoredMsg{
+		lastupdated: time.Now(),
+		clientid:    clientid,
+		Message:     m,
+		status:      StoredMsgSending,
+	}
+	mem.StoredMessages[storedMsgId] = s
+
+	return storedMsgId
 }
 
-func (mem *MemStorage) DeleteMsg(m *proto.Publish) {
-
+func (mem *MemStorage) DeleteMsg(storedMsgId string) (err error) {
+	if _, ok := mem.clients[storedMsgId]; ok {
+		delete(mem.StoredMessages, storedMsgId)
+		return nil
+	} else {
+		return errors.New(storedMsgId + " is not exists")
+	}
 }
 
 func (mem *MemStorage) Flush() {

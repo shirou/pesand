@@ -1,6 +1,5 @@
 
 
-
 あるclientがどこまでメッセージを受け取ったかの情報をトピックごとに持つ必要
 あり。
 
@@ -11,4 +10,4 @@ TCP connectionごとじゃなくて、CONNごとgoroutineを用意、DISCONが�
 保存。CONNが来たら既存のがあるかどうかを見て、あればそのgoroutineに引き
 渡す。
 
-
+- topicごとのACL

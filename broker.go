@@ -64,7 +64,6 @@ func (b *Broker) Start() {
 }
 
 func (b *Broker) Publish(m *proto.Publish) {
-	b.stats.messageRecv()
 	topic := m.TopicName
 	topics, _ := ExpandTopics(topic)
 	for _, t := range topics {

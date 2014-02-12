@@ -13,4 +13,6 @@ type Storage interface {
 	Unsubscribe(topic string, clientid string)
 	UpdateRetain(topic string, m *proto.Publish)
 	GetRetain(topic string) (*proto.Publish, bool)
+	DeleteMsg(storedMsgId string) (err error)
+	StoreMsg(clientid string, m *proto.Publish) (storedMsgId string)
 }

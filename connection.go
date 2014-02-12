@@ -205,6 +205,8 @@ func (c *Connection) handlePublish(m *proto.Publish) {
 	default:
 		log.Printf("Wrong QosLevel on Publish")
 	}
+
+	c.broker.stats.messageRecv()
 }
 
 func (c *Connection) handlePubRel(m *proto.PubRel) {
@@ -222,7 +224,15 @@ func (c *Connection) handlePubComp(m *proto.PubComp) {
 
 // Queue a message; no notification of sending is done.
 func (c *Connection) submit(m proto.Message) {
-	j := job{m: m}
+	storedMsgId := ""
+	switch pubm := m.(type) {
+	case *proto.Publish:
+		storedMsgId = c.broker.storage.StoreMsg(c.clientid, pubm)
+		log.Printf("msg stored: " + storedMsgId)
+		c.SendingMsgs.Put(storedMsgId)
+	}
+
+	j := job{m: m, storedmsgid: storedMsgId}
 	select {
 	case c.jobs <- j:
 	default:
@@ -293,6 +303,10 @@ func NewConnection(b *Broker, conn net.Conn) *Connection {
 	}
 	return c
 }
+
+//
+// StoredQueue is a fixed length queue to store messages in a connection.
+//
 
 type storedQueueNode struct {
 	storedMsgId string
