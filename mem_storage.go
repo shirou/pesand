@@ -22,7 +22,7 @@ type MemStorage struct {
 }
 
 const (
-	StoredMsgSent uint = 0
+	StoredMsgSent uint8 = iota
 	StoredMsgSending
 	StoredMsgWillBeDeleted
 )
@@ -32,7 +32,7 @@ type StoredMsg struct {
 	lastupdated time.Time
 	clientid    string
 	Message     proto.Message
-	status      uint
+	status      uint8
 }
 
 func (mem *MemStorage) MergeClient(clientid string, conn *Connection) (*Connection, error) {

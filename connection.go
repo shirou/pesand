@@ -5,10 +5,8 @@ import (
 	"errors"
 	//	proto "github.com/shirou/mqtt"
 	proto "github.com/huin/mqtt"
-	"io"
 	"log"
 	"net"
-	"strings"
 	"sync"
 	"time"
 )
@@ -25,8 +23,9 @@ var ConnectionErrors = [6]error{
 }
 
 const (
-	ClientAvailable   int = 0
-	ClientUnAvailable     // no PINGACK, no DISCONNECT
+	ClientAvailable   uint8 = iota
+	ClientUnAvailable       // no PINGACK, no DISCONNECT
+	ClientDisconnectedNormally
 )
 
 type Connection struct {
@@ -36,7 +35,7 @@ type Connection struct {
 	storage     Storage
 	jobs        chan job
 	Done        chan struct{}
-	Status      int
+	Status      uint8
 	TopicList   []string // Subscribed topic list
 	LastUpdated time.Time
 	SendingMsgs *StoredQueue // msgs which not sent
@@ -60,23 +59,18 @@ func (r receipt) wait() {
 func (c *Connection) handleConnection() {
 	defer func() {
 		c.conn.Close()
-		c.broker.stats.clientDisconnect()
 		close(c.jobs)
 	}()
 
 	for {
 		m, err := proto.DecodeOneMessage(c.conn, nil)
 		if err != nil {
-			if err == io.EOF {
-				return
-			}
-			if strings.HasSuffix(err.Error(), "use of closed network connection") {
-				return
-			}
-			log.Print("reader: ", err)
+			log.Printf("disconnected unexpectedly (%s): %s", c.clientid, err)
+			c.Status = ClientUnAvailable
+			log.Printf("dischogehgoe (%d):", c.Status)
 			return
 		}
-		log.Printf("incoming: %T", m)
+		log.Printf("incoming: %T from %s", m, c.clientid)
 		switch m := m.(type) {
 		case *proto.Connect:
 			c.handleConnect(m)
@@ -92,6 +86,7 @@ func (c *Connection) handleConnection() {
 			c.submit(&proto.PingResp{})
 		case *proto.Disconnect:
 			c.handleDisconnect(m)
+			c.Status = ClientDisconnectedNormally
 			return
 		case *proto.Subscribe:
 			c.handleSubscribe(m)
@@ -99,8 +94,8 @@ func (c *Connection) handleConnection() {
 			c.handleUnsubscribe(m)
 		default:
 			log.Printf("reader: unknown msg type %T, continue anyway", m)
-			continue
 		}
+		continue // loop until Disconnect comes.
 	}
 }
 
@@ -228,8 +223,14 @@ func (c *Connection) submit(m proto.Message) {
 	switch pubm := m.(type) {
 	case *proto.Publish:
 		storedMsgId = c.broker.storage.StoreMsg(c.clientid, pubm)
-		log.Printf("msg stored: " + storedMsgId)
+		log.Printf("msg stored: %s", storedMsgId)
 		c.SendingMsgs.Put(storedMsgId)
+	}
+
+	log.Printf("%s, %d", c.clientid, c.Status)
+	if c.Status != ClientAvailable {
+		log.Printf("msg sent to not available client, msg stored: %s", c.clientid)
+		return
 	}
 
 	j := job{m: m, storedmsgid: storedMsgId}
@@ -270,11 +271,12 @@ func (c *Connection) writer() {
 		}
 		// if storedmsgid is set, (QoS 1 or 2,) move to sentQueue
 		if job.storedmsgid != "" {
+			c.SendingMsgs.Get() // TODO: it ssumes Queue is FIFO
 			c.SentMsgs.Put(job.storedmsgid)
+			log.Printf("msg %s is moved to SentMsgs", job.storedmsgid)
 		}
 
 		if job.r != nil {
-			// TODO: QoS
 			close(job.r)
 		}
 	}
