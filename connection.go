@@ -1,7 +1,6 @@
 package main
 
 import (
-	//	"bufio"
 	"errors"
 	//	proto "github.com/shirou/mqtt"
 	proto "github.com/huin/mqtt"
@@ -67,10 +66,9 @@ func (c *Connection) handleConnection() {
 		if err != nil {
 			log.Printf("disconnected unexpectedly (%s): %s", c.clientid, err)
 			c.Status = ClientUnAvailable
-			log.Printf("dischogehgoe (%d):", c.Status)
 			return
 		}
-		log.Printf("incoming: %T from %s", m, c.clientid)
+		log.Printf("incoming: %T from %v", m, c.clientid)
 		switch m := m.(type) {
 		case *proto.Connect:
 			c.handleConnect(m)
@@ -252,10 +250,13 @@ func (c *Connection) submitSync(m proto.Message) receipt {
 
 func (c *Connection) writer() {
 	defer func() {
+		log.Printf("writer close: %s", c.clientid)
 		c.conn.Close()
 	}()
 
 	for job := range c.jobs {
+		log.Printf("writer begin: %T, %s", job.m, c.clientid)
+
 		// Disconnect msg is used for shutdown writer goroutine.
 		if _, ok := job.m.(*proto.Disconnect); ok {
 			log.Print("writer: sent disconnect message")
@@ -309,6 +310,7 @@ func NewConnection(b *Broker, conn net.Conn) *Connection {
 //
 // StoredQueue is a fixed length queue to store messages in a connection.
 //
+// XXX: should be usecontainer/list ?
 
 type storedQueueNode struct {
 	storedMsgId string
@@ -330,13 +332,19 @@ func NewStoredQueue(max int) *StoredQueue {
 	}
 }
 
+func (q *storedQueueNode) Next() *storedQueueNode {
+	return q.Next()
+}
+
 func (q *StoredQueue) Len() int {
+	q.lock.Lock()
+	defer q.lock.Unlock()
+
 	return q.count
 }
 
 func (q *StoredQueue) Put(storedMsgId string) {
 	q.lock.Lock()
-	defer q.lock.Unlock()
 
 	n := &storedQueueNode{storedMsgId: storedMsgId}
 
@@ -350,14 +358,21 @@ func (q *StoredQueue) Put(storedMsgId string) {
 	q.count++
 
 	if q.count > q.max {
+		q.lock.Unlock()
 		q.Get()
+		return
 	}
+	q.lock.Unlock()
 }
 func (q *StoredQueue) Get() string {
 	q.lock.Lock()
 	defer q.lock.Unlock()
 
 	n := q.head
+	if n == nil {
+		return ""
+	}
+
 	q.head = n.next
 
 	if q.head == nil {
