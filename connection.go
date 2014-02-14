@@ -145,13 +145,17 @@ func (c *Connection) handleConnect(m *proto.Connect) {
 	}
 	c.clientid = m.ClientId
 
-	currrent_c, err := c.storage.MergeClient(c.clientid, c)
+	clean := 0
+	if m.CleanSession {
+		clean = 1
+	}
+
+	currrent_c, err := c.storage.MergeClient(c.clientid, c, clean)
 	if err != nil {
 		c.storage.DeleteClient(c.clientid, c)
 		return
 	}
 
-	// TODO: Last will
 	connack := &proto.ConnAck{
 		ReturnCode: rc,
 	}
@@ -164,11 +168,6 @@ func (c *Connection) handleConnect(m *proto.Connect) {
 		return
 	}
 
-	// Log in mosquitto format.
-	clean := 0
-	if m.CleanSession {
-		clean = 1
-	}
 	log.Printf("New client connected from %v as %v (c%v, k%v).", currrent_c.conn.RemoteAddr(), currrent_c.clientid, clean, m.KeepAliveTimer)
 }
 

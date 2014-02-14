@@ -35,16 +35,22 @@ type StoredMsg struct {
 	status      uint8
 }
 
-func (mem *MemStorage) MergeClient(clientid string, conn *Connection) (*Connection, error) {
+func (mem *MemStorage) MergeClient(clientid string, conn *Connection, clean int) (*Connection, error) {
 	mem.clientsMu.Lock()
 	defer mem.clientsMu.Unlock()
 
 	if _, ok := mem.clients[clientid]; ok {
-		c := mem.clients[clientid]
-		if c.Status == ClientAvailable {
-			log.Println("Re-con")
-		}
 
+		// clean flag is true, clean it
+		if clean == 0 {
+			mem.DeleteClient(clientid, conn)
+		} else {
+			// clean flag is false, reuse existsted clients
+			c := mem.clients[clientid]
+			if c.Status == ClientAvailable {
+				log.Printf("client id %s has been reconnected.")
+			}
+		}
 		return c, nil
 	}
 	mem.clients[clientid] = conn
