@@ -5,7 +5,7 @@ import (
 )
 
 type Storage interface {
-	MergeClient(string, *Connection) (*Connection, error)
+	MergeClient(string, *Connection, int) (conn *Connection, err error)
 	DeleteClient(string, *Connection) error
 	GetTopicClientList(string) []string
 	GetClientConnection(topic string) *Connection

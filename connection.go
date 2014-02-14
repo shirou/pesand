@@ -39,6 +39,7 @@ type Connection struct {
 	LastUpdated time.Time
 	SendingMsgs *StoredQueue // msgs which not sent
 	SentMsgs    *StoredQueue // msgs which already sent
+	WillMsg     *proto.Publish
 }
 
 type job struct {
@@ -65,6 +66,12 @@ func (c *Connection) handleConnection() {
 		m, err := proto.DecodeOneMessage(c.conn, nil)
 		if err != nil {
 			log.Printf("disconnected unexpectedly (%s): %s", c.clientid, err)
+
+			if c.WillMsg != nil {
+				log.Printf("Send Will message of %s", c.clientid)
+				c.handlePublish(c.WillMsg)
+			}
+
 			c.Status = ClientUnAvailable
 			return
 		}
@@ -154,6 +161,20 @@ func (c *Connection) handleConnect(m *proto.Connect) {
 	if err != nil {
 		c.storage.DeleteClient(c.clientid, c)
 		return
+	}
+
+	if m.WillFlag {
+		header := proto.Header{
+			DupFlag:  false,
+			QosLevel: m.WillQos,
+			Retain:   m.WillRetain,
+		}
+
+		c.WillMsg = &proto.Publish{
+			Header:    header,
+			TopicName: m.WillTopic,
+			Payload:   newStringPayload(m.WillMessage),
+		}
 	}
 
 	connack := &proto.ConnAck{

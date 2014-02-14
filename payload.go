@@ -20,6 +20,24 @@ func (ip intPayload) WritePayload(w io.Writer) error {
 	_, err := w.Write([]byte(string(ip)))
 	return err
 }
-func (i intPayload) Size() int {
-	return len(i)
+func (ip intPayload) Size() int {
+	return len(ip)
+}
+
+// String payload
+type stringPayload string
+
+func newStringPayload(s string) stringPayload {
+	return stringPayload(s)
+}
+func (sp stringPayload) ReadPayload(r io.Reader) error {
+	// not implemented
+	return nil
+}
+func (sp stringPayload) WritePayload(w io.Writer) error {
+	_, err := w.Write([]byte(sp))
+	return err
+}
+func (sp stringPayload) Size() int {
+	return len(sp)
 }

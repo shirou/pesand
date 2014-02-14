@@ -49,9 +49,9 @@ func (mem *MemStorage) MergeClient(clientid string, conn *Connection, clean int)
 			c := mem.clients[clientid]
 			if c.Status == ClientAvailable {
 				log.Printf("client id %s has been reconnected.")
+				return c, nil
 			}
 		}
-		return c, nil
 	}
 	mem.clients[clientid] = conn
 
