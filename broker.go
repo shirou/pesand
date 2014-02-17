@@ -30,6 +30,12 @@ func NewBroker(conf Config, listen net.Listener) *Broker {
 	return broker
 }
 
+// Auth auth
+// not implemented yet
+func (b *Broker) Auth(username string, password string) bool {
+	return true
+}
+
 func (b *Broker) Start() {
 	go func() {
 		for {

@@ -28,18 +28,21 @@ const (
 )
 
 type Connection struct {
-	broker      *Broker
-	conn        net.Conn
-	clientid    string
-	storage     Storage
-	jobs        chan job
-	Done        chan struct{}
-	Status      uint8
-	TopicList   []string // Subscribed topic list
-	LastUpdated time.Time
-	SendingMsgs *StoredQueue // msgs which not sent
-	SentMsgs    *StoredQueue // msgs which already sent
-	WillMsg     *proto.Publish
+	broker            *Broker
+	conn              net.Conn
+	clientid          string
+	storage           Storage
+	jobs              chan job
+	Done              chan struct{}
+	Status            uint8
+	TopicList         []string // Subscribed topic list
+	LastUpdated       time.Time
+	SendingMsgs       *StoredQueue // msgs which not sent
+	SentMsgs          *StoredQueue // msgs which already sent
+	WillMsg           *proto.Publish
+	KeepAliveTimer    uint16
+	lastKeepAliveTime time.Time
+	Username          string
 }
 
 type job struct {
@@ -144,6 +147,16 @@ func (c *Connection) handleConnect(m *proto.Connect) {
 		m.ProtocolVersion != 3 {
 		log.Print("reader: reject connection from ", m.ProtocolName, " version ", m.ProtocolVersion)
 		rc = proto.RetCodeUnacceptableProtocolVersion
+	}
+
+	if m.UsernameFlag {
+		if c.broker.Auth(m.Username, m.Password) == false {
+			log.Printf("Auth failed: %s", m.Username)
+			rc = proto.RetCodeNotAuthorized
+		} else {
+			c.Username = m.Username
+		}
+
 	}
 
 	// Check client id.
