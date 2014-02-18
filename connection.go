@@ -142,17 +142,25 @@ func (c *Connection) handleUnsubscribe(m *proto.Unsubscribe) {
 }
 
 func (c *Connection) handleConnect(m *proto.Connect) {
-	rc := proto.RetCodeAccepted
-	if m.ProtocolName != "MQIsdp" ||
-		m.ProtocolVersion != 3 {
-		log.Print("reader: reject connection from ", m.ProtocolName, " version ", m.ProtocolVersion)
-		rc = proto.RetCodeUnacceptableProtocolVersion
-	}
+	// Protocol check disabled due to difference between 3.1 and 3.1.1
+	//	if m.ProtocolName != "MQIsdp" || // should be MQTT?
+	//		m.ProtocolVersion != 3 {
+	//		log.Print("reader: reject connection from ", m.ProtocolName, " version ", m.ProtocolVersion)
+	//      connack := &proto.ConnAck{
+	//		    ReturnCode: proto.RetCodeUnacceptableProtocolVersio,
+	//	    }
+	//		c.submit(connack)
+	//		return
+	//	}
 
 	if m.UsernameFlag {
 		if c.broker.Auth(m.Username, m.Password) == false {
-			log.Printf("Auth failed: %s", m.Username)
-			rc = proto.RetCodeNotAuthorized
+			log.Printf("Auth failed: %s, %s", m.Username, c.conn.RemoteAddr())
+			connack := &proto.ConnAck{
+				ReturnCode: proto.RetCodeNotAuthorized,
+			}
+			c.submit(connack)
+			return
 		} else {
 			c.Username = m.Username
 		}
@@ -161,7 +169,11 @@ func (c *Connection) handleConnect(m *proto.Connect) {
 
 	// Check client id.
 	if len(m.ClientId) < 1 || len(m.ClientId) > 23 {
-		rc = proto.RetCodeIdentifierRejected
+		connack := &proto.ConnAck{
+			ReturnCode: proto.RetCodeIdentifierRejected,
+		}
+		c.submit(connack)
+		return
 	}
 	c.clientid = m.ClientId
 
@@ -191,16 +203,9 @@ func (c *Connection) handleConnect(m *proto.Connect) {
 	}
 
 	connack := &proto.ConnAck{
-		ReturnCode: rc,
+		ReturnCode: proto.RetCodeAccepted,
 	}
-
 	currrent_c.submit(connack)
-
-	// close connection if it was a bad connect
-	if rc != proto.RetCodeAccepted {
-		log.Printf("Connection refused for %v: %v", currrent_c.conn.RemoteAddr(), ConnectionErrors[rc])
-		return
-	}
 
 	log.Printf("New client connected from %v as %v (c%v, k%v).", currrent_c.conn.RemoteAddr(), currrent_c.clientid, clean, m.KeepAliveTimer)
 }
