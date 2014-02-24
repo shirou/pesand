@@ -142,16 +142,27 @@ func (c *Connection) handleUnsubscribe(m *proto.Unsubscribe) {
 }
 
 func (c *Connection) handleConnect(m *proto.Connect) {
-	// Protocol check disabled due to difference between 3.1 and 3.1.1
-	//	if m.ProtocolName != "MQIsdp" || // should be MQTT?
-	//		m.ProtocolVersion != 3 {
-	//		log.Print("reader: reject connection from ", m.ProtocolName, " version ", m.ProtocolVersion)
-	//      connack := &proto.ConnAck{
-	//		    ReturnCode: proto.RetCodeUnacceptableProtocolVersio,
-	//	    }
-	//		c.submit(connack)
-	//		return
-	//	}
+	protoValidate := true
+	switch m.ProtocolName {
+	case "MQIsdp": // version 3.1
+		if m.ProtocolVersion != 3 {
+			protoValidate = false
+		}
+	case "MQTT": // version 3.1.1
+		if m.ProtocolVersion != 4 {
+			protoValidate = false
+		}
+	default:
+		protoValidate = false
+	}
+	if protoValidate == false {
+		log.Print("reader: reject connection from ", m.ProtocolName, " version ", m.ProtocolVersion)
+		connack := &proto.ConnAck{
+			ReturnCode: proto.RetCodeUnacceptableProtocolVersion,
+		}
+		c.submit(connack)
+		return
+	}
 
 	if m.UsernameFlag {
 		if c.broker.Auth(m.Username, m.Password) == false {
@@ -241,11 +252,13 @@ func (c *Connection) handlePublish(m *proto.Publish) {
 }
 
 func (c *Connection) handlePubRel(m *proto.PubRel) {
+	// TODO:
 	c.submit(&proto.PubComp{MessageId: m.MessageId})
 	log.Printf("PubComp sent")
 }
 
 func (c *Connection) handlePubRec(m *proto.PubRec) {
+	// TODO:
 	c.submit(&proto.PubRel{MessageId: m.MessageId})
 	log.Printf("PubRel sent")
 }
@@ -263,7 +276,6 @@ func (c *Connection) submit(m proto.Message) {
 		c.SendingMsgs.Put(storedMsgId)
 	}
 
-	log.Printf("%s, %d", c.clientid, c.Status)
 	if c.Status != ClientAvailable {
 		log.Printf("msg sent to not available client, msg stored: %s", c.clientid)
 		return
