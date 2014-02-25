@@ -3,8 +3,8 @@ package main
 import (
 	"errors"
 	"fmt"
+	"github.com/golang/glog"
 	proto "github.com/huin/mqtt"
-	"log"
 	"math/rand"
 	"sync"
 	"time"
@@ -38,21 +38,21 @@ type StoredMsg struct {
 func (mem *MemStorage) MergeClient(clientid string, conn *Connection, clean int) (*Connection, error) {
 	mem.clientsMu.Lock()
 	defer mem.clientsMu.Unlock()
-
 	if _, ok := mem.clients[clientid]; ok {
-
 		// clean flag is true, clean it
 		if clean == 0 {
+			glog.V(2).Infof("clean flag is true, delete old client:%s", clientid)
 			mem.DeleteClient(clientid, conn)
 		} else {
 			// clean flag is false, reuse existsted clients
 			c := mem.clients[clientid]
 			if c.Status == ClientAvailable {
-				log.Printf("client id %s has been reconnected.", clientid)
+				glog.Infof("client id %s has been reconnected.", clientid)
 				return c, nil
 			}
 		}
 	}
+
 	mem.clients[clientid] = conn
 
 	return conn, nil

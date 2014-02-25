@@ -3,8 +3,8 @@ package main
 import (
 	"errors"
 	//	proto "github.com/shirou/mqtt"
+	"github.com/golang/glog"
 	proto "github.com/huin/mqtt"
-	"log"
 	"net"
 	"sync"
 	"time"
@@ -68,17 +68,17 @@ func (c *Connection) handleConnection() {
 	for {
 		m, err := proto.DecodeOneMessage(c.conn, nil)
 		if err != nil {
-			log.Printf("disconnected unexpectedly (%s): %s", c.clientid, err)
+			glog.Infof("disconnected unexpectedly (%s): %s", c.clientid, err)
 
 			if c.WillMsg != nil {
-				log.Printf("Send Will message of %s", c.clientid)
+				glog.Infof("Send Will message of %s", c.clientid)
 				c.handlePublish(c.WillMsg)
 			}
 
 			c.Status = ClientUnAvailable
 			return
 		}
-		log.Printf("incoming: %T from %v", m, c.clientid)
+		glog.V(2).Infof("incoming: %T from %v", m, c.clientid)
 		switch m := m.(type) {
 		case *proto.Connect:
 			c.handleConnect(m)
@@ -101,7 +101,7 @@ func (c *Connection) handleConnection() {
 		case *proto.Unsubscribe:
 			c.handleUnsubscribe(m)
 		default:
-			log.Printf("reader: unknown msg type %T, continue anyway", m)
+			glog.Infof("reader: unknown msg type %T, continue anyway", m)
 		}
 		continue // loop until Disconnect comes.
 	}
@@ -156,7 +156,7 @@ func (c *Connection) handleConnect(m *proto.Connect) {
 		protoValidate = false
 	}
 	if protoValidate == false {
-		log.Print("reader: reject connection from ", m.ProtocolName, " version ", m.ProtocolVersion)
+		glog.Warningf("reader: reject connection from ", m.ProtocolName, " version ", m.ProtocolVersion)
 		connack := &proto.ConnAck{
 			ReturnCode: proto.RetCodeUnacceptableProtocolVersion,
 		}
@@ -166,7 +166,7 @@ func (c *Connection) handleConnect(m *proto.Connect) {
 
 	if m.UsernameFlag {
 		if c.broker.Auth(m.Username, m.Password) == false {
-			log.Printf("Auth failed: %s, %s", m.Username, c.conn.RemoteAddr())
+			glog.Warningf("Auth failed: %s, %s", m.Username, c.conn.RemoteAddr())
 			connack := &proto.ConnAck{
 				ReturnCode: proto.RetCodeNotAuthorized,
 			}
@@ -218,7 +218,7 @@ func (c *Connection) handleConnect(m *proto.Connect) {
 	}
 	currrent_c.submit(connack)
 
-	log.Printf("New client connected from %v as %v (c%v, k%v).", currrent_c.conn.RemoteAddr(), currrent_c.clientid, clean, m.KeepAliveTimer)
+	glog.V(2).Infof("New client connected from %v as %v (c%v, k%v).", currrent_c.conn.RemoteAddr(), currrent_c.clientid, clean, m.KeepAliveTimer)
 }
 
 func (c *Connection) handleDisconnect(m *proto.Disconnect) {
@@ -234,7 +234,7 @@ func (c *Connection) handlePublish(m *proto.Publish) {
 
 	if m.Header.Retain {
 		c.broker.UpdateRetain(m)
-		log.Printf("Publish msg retained: %s", m.TopicName)
+		glog.V(2).Infof("Publish msg retained: %s", m.TopicName)
 	}
 
 	switch m.Header.QosLevel {
@@ -245,7 +245,7 @@ func (c *Connection) handlePublish(m *proto.Publish) {
 	case proto.QosExactlyOnce:
 		c.submit(&proto.PubRec{MessageId: m.MessageId})
 	default:
-		log.Printf("Wrong QosLevel on Publish")
+		glog.Warningf("Wrong QosLevel on Publish: %v", m.Header.QosLevel)
 	}
 
 	c.broker.stats.messageRecv()
@@ -254,13 +254,13 @@ func (c *Connection) handlePublish(m *proto.Publish) {
 func (c *Connection) handlePubRel(m *proto.PubRel) {
 	// TODO:
 	c.submit(&proto.PubComp{MessageId: m.MessageId})
-	log.Printf("PubComp sent")
+	glog.V(2).Infof("PubComp sent")
 }
 
 func (c *Connection) handlePubRec(m *proto.PubRec) {
 	// TODO:
 	c.submit(&proto.PubRel{MessageId: m.MessageId})
-	log.Printf("PubRel sent")
+	glog.V(2).Infof("PubRel sent")
 }
 func (c *Connection) handlePubComp(m *proto.PubComp) {
 	// TODO:
@@ -271,13 +271,16 @@ func (c *Connection) submit(m proto.Message) {
 	storedMsgId := ""
 	switch pubm := m.(type) {
 	case *proto.Publish:
-		storedMsgId = c.broker.storage.StoreMsg(c.clientid, pubm)
-		log.Printf("msg stored: %s", storedMsgId)
-		c.SendingMsgs.Put(storedMsgId)
+
+		if pubm.Header.QosLevel != proto.QosAtLeastOnce {
+			storedMsgId = c.broker.storage.StoreMsg(c.clientid, pubm)
+			glog.V(2).Infof("msg stored: %s", storedMsgId)
+			c.SendingMsgs.Put(storedMsgId)
+		}
 	}
 
 	if c.Status != ClientAvailable {
-		log.Printf("msg sent to not available client, msg stored: %s", c.clientid)
+		glog.Infof("msg sent to non-available client, msg stored: %s", c.clientid)
 		return
 	}
 
@@ -285,7 +288,7 @@ func (c *Connection) submit(m proto.Message) {
 	select {
 	case c.jobs <- j:
 	default:
-		log.Print(c, ": failed to submit message")
+		glog.Warningf("%v: failed to submit message", c)
 	}
 	return
 }
@@ -300,16 +303,16 @@ func (c *Connection) submitSync(m proto.Message) receipt {
 
 func (c *Connection) writer() {
 	defer func() {
-		log.Printf("writer close: %s", c.clientid)
+		glog.Infof("writer close: %s", c.clientid)
 		c.conn.Close()
 	}()
 
 	for job := range c.jobs {
-		log.Printf("writer begin: %T, %s", job.m, c.clientid)
+		glog.V(2).Infof("writer begin: %T, %s", job.m, c.clientid)
 
 		// Disconnect msg is used for shutdown writer goroutine.
 		if _, ok := job.m.(*proto.Disconnect); ok {
-			log.Print("writer: sent disconnect message")
+			glog.Warningf("writer: sent disconnect message")
 			return
 		}
 
@@ -317,14 +320,14 @@ func (c *Connection) writer() {
 		err := job.m.Encode(c.conn)
 
 		if err != nil {
-			log.Print("writer: ", err)
+			glog.Warningf("writer error: ", err)
 			continue // Error does not shutdown Connection, wait re-connect
 		}
-		// if storedmsgid is set, (QoS 1 or 2,) move to sentQueue
+		// if storedmsgid is set, (QoS 1 or 2) move to sentQueue
 		if job.storedmsgid != "" {
 			c.SendingMsgs.Get() // TODO: it ssumes Queue is FIFO
 			c.SentMsgs.Put(job.storedmsgid)
-			log.Printf("msg %s is moved to SentMsgs", job.storedmsgid)
+			glog.V(2).Infof("msg %s is moved to SentMsgs", job.storedmsgid)
 		}
 
 		if job.r != nil {

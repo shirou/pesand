@@ -1,8 +1,8 @@
 package main
 
 import (
+	"github.com/golang/glog"
 	proto "github.com/huin/mqtt"
-	"log"
 	"net"
 	"time"
 )
@@ -37,11 +37,12 @@ func (b *Broker) Auth(username string, password string) bool {
 }
 
 func (b *Broker) Start() {
+	glog.Infof("Broker started")
 	go func() {
 		for {
 			conn, err := b.listen.Accept()
 			if err != nil {
-				log.Print("Accept: ", err)
+				glog.Infof("Accept: %v", err)
 				break
 			}
 			c := NewConnection(b, conn)
@@ -95,12 +96,12 @@ func (b *Broker) GetRetain(topic string) (*proto.Publish, bool) {
 }
 
 func (b *Broker) Subscribe(topic string, conn *Connection) {
-	log.Printf("Subscribe: %s on %s", topic, conn.clientid)
+	glog.Infof("Subscribe: %s on %s", topic, conn.clientid)
 	b.storage.Subscribe(topic, conn.clientid)
 }
 
 func (b *Broker) Unsubscribe(topic string, conn *Connection) {
-	log.Printf("UnSubscribe: %s on %s", topic, conn.clientid)
+	glog.Infof("UnSubscribe: %s on %s", topic, conn.clientid)
 	topics, _ := ExpandTopics(topic)
 	for _, t := range topics {
 		b.storage.Unsubscribe(t, conn.clientid)
