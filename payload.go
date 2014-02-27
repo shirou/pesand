@@ -13,8 +13,10 @@ func newIntPayload(i int64) intPayload {
 	return intPayload(fmt.Sprint(i))
 }
 func (ip intPayload) ReadPayload(r io.Reader) error {
-	// not implemented
 	return nil
+}
+func (ip intPayload) ToString() string {
+	return string(ip)
 }
 func (ip intPayload) WritePayload(w io.Writer) error {
 	_, err := w.Write([]byte(string(ip)))
@@ -29,6 +31,9 @@ type stringPayload string
 
 func newStringPayload(s string) stringPayload {
 	return stringPayload(s)
+}
+func (sp stringPayload) ToString() string {
+	return string(sp)
 }
 func (sp stringPayload) ReadPayload(r io.Reader) error {
 	// not implemented

@@ -2,7 +2,6 @@ package main
 
 import (
 	"errors"
-	//	proto "github.com/shirou/mqtt"
 	"github.com/golang/glog"
 	proto "github.com/huin/mqtt"
 	"net"
@@ -117,9 +116,8 @@ func (c *Connection) handleSubscribe(m *proto.Subscribe) {
 		TopicsQos: make([]proto.QosLevel, len(m.Topics)),
 	}
 	for i, tq := range m.Topics {
-		// TODO: Handle varying QoS correctly
 		c.broker.Subscribe(tq.Topic, c)
-		suback.TopicsQos[i] = proto.QosAtMostOnce
+		suback.TopicsQos[i] = tq.Qos
 
 		c.TopicList = append(c.TopicList, tq.Topic)
 	}
@@ -175,7 +173,6 @@ func (c *Connection) handleConnect(m *proto.Connect) {
 		} else {
 			c.Username = m.Username
 		}
-
 	}
 
 	// Check client id.
@@ -237,15 +234,20 @@ func (c *Connection) handlePublish(m *proto.Publish) {
 		glog.V(2).Infof("Publish msg retained: %s", m.TopicName)
 	}
 
+	glog.V(2).Infof("recv body:%d, %s, %v", m.Header.QosLevel, m.Payload, m.MessageId)
 	switch m.Header.QosLevel {
-	case proto.QosAtLeastOnce:
-		// do nothing
 	case proto.QosAtMostOnce:
+		// do nothing
+		break
+	case proto.QosAtLeastOnce:
 		c.submit(&proto.PubAck{MessageId: m.MessageId})
+		break
 	case proto.QosExactlyOnce:
 		c.submit(&proto.PubRec{MessageId: m.MessageId})
+		break
 	default:
 		glog.Warningf("Wrong QosLevel on Publish: %v", m.Header.QosLevel)
+		break
 	}
 
 	c.broker.stats.messageRecv()
@@ -271,7 +273,7 @@ func (c *Connection) submit(m proto.Message) {
 	storedMsgId := ""
 	switch pubm := m.(type) {
 	case *proto.Publish:
-
+		glog.V(2).Infof("send body:%s, %T, %d", pubm.Payload, pubm.Payload, pubm.MessageId)
 		if pubm.Header.QosLevel != proto.QosAtLeastOnce {
 			storedMsgId = c.broker.storage.StoreMsg(c.clientid, pubm)
 			glog.V(2).Infof("msg stored: %s", storedMsgId)
