@@ -83,6 +83,8 @@ func (c *Connection) handleConnection() {
 			c.handleConnect(m)
 		case *proto.Publish:
 			c.handlePublish(m)
+		case *proto.PubAck:
+			c.handlePubAck(m)
 		case *proto.PubRel:
 			c.handlePubRel(m)
 		case *proto.PubRec:
@@ -241,9 +243,11 @@ func (c *Connection) handlePublish(m *proto.Publish) {
 		break
 	case proto.QosAtLeastOnce:
 		c.submit(&proto.PubAck{MessageId: m.MessageId})
+		glog.V(2).Infof("QoS1: Puback sent: %v", m.MessageId)
 		break
 	case proto.QosExactlyOnce:
 		c.submit(&proto.PubRec{MessageId: m.MessageId})
+		glog.V(2).Infof("QoS2: Pubrec sent: %v", m.MessageId)
 		break
 	default:
 		glog.Warningf("Wrong QosLevel on Publish: %v", m.Header.QosLevel)
@@ -253,19 +257,25 @@ func (c *Connection) handlePublish(m *proto.Publish) {
 	c.broker.stats.messageRecv()
 }
 
+func (c *Connection) handlePubAck(m *proto.PubAck) {
+	// TODO:
+	glog.V(2).Infof("PubAck recieved: %v", m.MessageId)
+}
+
 func (c *Connection) handlePubRel(m *proto.PubRel) {
 	// TODO:
 	c.submit(&proto.PubComp{MessageId: m.MessageId})
-	glog.V(2).Infof("PubComp sent")
+	glog.V(2).Infof("PubComp sent: %v", m.MessageId)
 }
 
 func (c *Connection) handlePubRec(m *proto.PubRec) {
 	// TODO:
 	c.submit(&proto.PubRel{MessageId: m.MessageId})
-	glog.V(2).Infof("PubRel sent")
+	glog.V(2).Infof("PubRel sent: %v", m.MessageId)
 }
 func (c *Connection) handlePubComp(m *proto.PubComp) {
 	// TODO:
+	glog.V(2).Infof("PubComp received: %v", m.MessageId)
 }
 
 // Queue a message; no notification of sending is done.
@@ -310,7 +320,7 @@ func (c *Connection) writer() {
 	}()
 
 	for job := range c.jobs {
-		glog.V(2).Infof("writer begin: %T, %s", job.m, c.clientid)
+		glog.V(2).Infof("Sending: %T, %s", job.m, c.clientid)
 
 		// Disconnect msg is used for shutdown writer goroutine.
 		if _, ok := job.m.(*proto.Disconnect); ok {
