@@ -3,7 +3,8 @@ package main
 import (
 	"errors"
 	"fmt"
-	"github.com/golang/glog"
+	//"github.com/golang/glog"
+	log "github.com/Sirupsen/logrus"
 	proto "github.com/huin/mqtt"
 	"math/rand"
 	"sync"
@@ -35,19 +36,26 @@ type StoredMsg struct {
 	status      uint8
 }
 
+//MergeClient
 func (mem *MemStorage) MergeClient(clientid string, conn *Connection, clean int) (*Connection, error) {
 	mem.clientsMu.Lock()
 	defer mem.clientsMu.Unlock()
+
+	clientLog := log.WithField("clientID", clientid)
+
 	if _, ok := mem.clients[clientid]; ok {
 		// clean flag is true, clean it
 		if clean == 0 {
-			glog.V(2).Infof("clean flag is true, delete old client:%s", clientid)
+			clientLog.Debug("clean flag is true, delete old client")
+
 			mem.DeleteClient(clientid, conn)
 		} else {
 			// clean flag is false, reuse existsted clients
 			c := mem.clients[clientid]
 			if c.Status == ClientAvailable {
-				glog.Infof("client id %s has been reconnected.", clientid)
+				//glog.Infof("client id %s has been reconnected.", clientid)
+				clientLog.Debug("client has been reconnected")
+
 				return c, nil
 			}
 		}
@@ -58,6 +66,7 @@ func (mem *MemStorage) MergeClient(clientid string, conn *Connection, clean int)
 	return conn, nil
 }
 
+//DeleteClient
 func (mem *MemStorage) DeleteClient(clientid string, conn *Connection) error {
 	return nil
 }
@@ -73,6 +82,7 @@ func createStoredMsgId(clientid string, m *proto.Publish) string {
 	return fmt.Sprintf("%s-%v-%v", clientid, m.MessageId, r)
 }
 
+//StoreMsg
 func (mem *MemStorage) StoreMsg(clientid string, m *proto.Publish) (storedMsgId string) {
 	storedMsgId = createStoredMsgId(clientid, m)
 
@@ -87,6 +97,7 @@ func (mem *MemStorage) StoreMsg(clientid string, m *proto.Publish) (storedMsgId 
 	return storedMsgId
 }
 
+//DeleteMsg
 func (mem *MemStorage) DeleteMsg(storedMsgId string) (err error) {
 	if _, ok := mem.clients[storedMsgId]; ok {
 		delete(mem.StoredMessages, storedMsgId)
@@ -96,22 +107,27 @@ func (mem *MemStorage) DeleteMsg(storedMsgId string) (err error) {
 	}
 }
 
+//Flush
 func (mem *MemStorage) Flush() {
 
 }
 
+//GetTopicClientList
 func (mem *MemStorage) GetTopicClientList(topic string) []string {
 	return mem.TopicTable[topic]
 }
 
+//GetClientConnection
 func (mem *MemStorage) GetClientConnection(clientid string) *Connection {
 	return mem.clients[clientid]
 }
 
+//Subscribe
 func (mem *MemStorage) Subscribe(topic string, clientid string) {
 	mem.TopicTable[topic] = append(mem.TopicTable[topic], clientid)
 }
 
+//Unsubscribe
 func (mem *MemStorage) Unsubscribe(topic string, clientid string) {
 	a := mem.TopicTable[topic]
 	for i, cid := range a {
@@ -121,10 +137,13 @@ func (mem *MemStorage) Unsubscribe(topic string, clientid string) {
 	}
 }
 
+//UpdateRetain
 func (mem *MemStorage) UpdateRetain(topic string, m *proto.Publish) {
 	//does not need lock or check exists. just update it
 	mem.RetainMap[topic] = m
 }
+
+//GetRetain
 func (mem *MemStorage) GetRetain(topic string) (*proto.Publish, bool) {
 	m, ok := mem.RetainMap[topic]
 	return m, ok

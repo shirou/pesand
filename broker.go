@@ -1,7 +1,8 @@
 package main
 
 import (
-	"github.com/golang/glog"
+	//"github.com/golang/glog"
+	log "github.com/Sirupsen/logrus"
 	proto "github.com/huin/mqtt"
 	"net"
 	"time"
@@ -12,6 +13,7 @@ type Broker struct {
 	Port             string
 	stats            Stats
 	storage          Storage
+	auth             Authorize
 	conf             *Config
 	Done             chan struct{}
 	StatsIntervalSec time.Duration
@@ -23,6 +25,7 @@ func NewBroker(conf Config, listen net.Listener) *Broker {
 		Port:             conf.Default.Port,
 		stats:            NewStats(),
 		storage:          NewMemStorage(),
+		auth:             NewJWTAuth(conf.Auth.JWTKey),
 		conf:             &conf,
 		Done:             make(chan struct{}),
 		StatsIntervalSec: time.Second * conf.Default.StatsIntervalSec,
@@ -31,20 +34,21 @@ func NewBroker(conf Config, listen net.Listener) *Broker {
 }
 
 // Auth auth
-// not implemented yet
 func (b *Broker) Auth(username string, password string) bool {
-	return true
+	return b.auth.Auth(username, password)
 }
 
 func (b *Broker) Start() {
-	glog.Infof("Broker started")
+
+	log.Info("Broker started")
 	go func() {
 		for {
 			conn, err := b.listen.Accept()
 			if err != nil {
-				glog.Infof("Accept: %v", err)
+				log.Warnf("Accept: %v", err)
 				break
 			}
+
 			c := NewConnection(b, conn)
 			c.Start()
 			b.stats.clientConnect()
@@ -96,12 +100,18 @@ func (b *Broker) GetRetain(topic string) (*proto.Publish, bool) {
 }
 
 func (b *Broker) Subscribe(topic string, conn *Connection) {
-	glog.Infof("Subscribe: %s on %s", topic, conn.clientid)
+
+	log.WithFields(log.Fields{"topic": topic, "clientID": conn.clientid}).
+		Info("Subscribe")
+
 	b.storage.Subscribe(topic, conn.clientid)
 }
 
 func (b *Broker) Unsubscribe(topic string, conn *Connection) {
-	glog.Infof("UnSubscribe: %s on %s", topic, conn.clientid)
+
+	log.WithFields(log.Fields{"topic": topic, "clientID": conn.clientid}).
+		Info("Unsubscribe")
+
 	topics, _ := ExpandTopics(topic)
 	for _, t := range topics {
 		b.storage.Unsubscribe(t, conn.clientid)

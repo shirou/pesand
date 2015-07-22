@@ -12,6 +12,11 @@ type Config struct {
 		Port             string
 		StatsIntervalSec time.Duration
 	}
+	Auth struct {
+		JWTKey   string //for jwt auth
+		Username string //for basic auth
+		Password string //for basic auth
+	}
 	Queue struct {
 		SendingQueueLength int
 		SentQueueLength    int
