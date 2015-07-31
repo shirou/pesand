@@ -1,24 +1,28 @@
 package main
 
 import (
+	//"fmt"
 	"testing"
 )
 
 func TestStoredQueue(t *testing.T) {
-	q := NewStoredQueue(1)
+	q := NewStoredQueue()
 
-	if q.Get() != "" {
+	result, _ := q.Pop()
+	if result != "" {
 		t.Errorf("wrong empty handling")
 	}
 
-	q.Put("test")
-	if q.Get() != "test" {
+	q.Push("test")
+	result, _ = q.Pop()
+	if result != "test" {
 		t.Errorf("not match")
 	}
-	q.Put("test1")
-	q.Put("test2")
-	if q.Get() != "test2" {
-		t.Errorf("wrong max handling")
-	}
+	//q.Push("test1")
+	//q.Push("test2")
+	//result, _ = q.Pop()
+	//if result != "test2" {
+	//	t.Errorf("wrong max handling")
+	//}
 
 }

@@ -3,18 +3,16 @@ package main
 import (
 	"errors"
 	"fmt"
-	//"github.com/golang/glog"
 	log "github.com/Sirupsen/logrus"
 	proto "github.com/huin/mqtt"
-	"math/rand"
 	"sync"
 	"time"
 )
 
 type MemStorage struct {
 	clientsMu sync.Mutex
-	// clientid -> list of Connection
-	clients map[string]*Connection
+	// clientid -> list of Session
+	clients map[string]*Session
 	// topic -> list of clientid
 	TopicTable map[string][]string
 	RetainMap  map[string]*proto.Publish
@@ -22,22 +20,8 @@ type MemStorage struct {
 	StoredMessages map[string]*StoredMsg
 }
 
-const (
-	StoredMsgSent uint8 = iota
-	StoredMsgSending
-	StoredMsgWillBeDeleted
-)
-
-// A message which will be
-type StoredMsg struct {
-	lastupdated time.Time
-	clientid    string
-	Message     proto.Message
-	status      uint8
-}
-
 //MergeClient
-func (mem *MemStorage) MergeClient(clientid string, conn *Connection, clean int) (*Connection, error) {
+func (mem *MemStorage) MergeClientSession(clientid string, sess *Session, clean int) (*Session, error) {
 	mem.clientsMu.Lock()
 	defer mem.clientsMu.Unlock()
 
@@ -48,12 +32,11 @@ func (mem *MemStorage) MergeClient(clientid string, conn *Connection, clean int)
 		if clean == 0 {
 			clientLog.Debug("clean flag is true, delete old client")
 
-			mem.DeleteClient(clientid, conn)
+			mem.DeleteClientSession(clientid)
 		} else {
 			// clean flag is false, reuse existsted clients
 			c := mem.clients[clientid]
 			if c.Status == ClientAvailable {
-				//glog.Infof("client id %s has been reconnected.", clientid)
 				clientLog.Debug("client has been reconnected")
 
 				return c, nil
@@ -61,29 +44,18 @@ func (mem *MemStorage) MergeClient(clientid string, conn *Connection, clean int)
 		}
 	}
 
-	mem.clients[clientid] = conn
+	mem.clients[clientid] = sess
 
-	return conn, nil
+	return sess, nil
 }
 
 //DeleteClient
-func (mem *MemStorage) DeleteClient(clientid string, conn *Connection) error {
+func (mem *MemStorage) DeleteClientSession(clientid string) error {
 	return nil
 }
 
-// createStoredMsgId creates a uniq stored id from
-// publish msg. This is used as a key of StoredMessages.
-// <clientdi>-<msgid>-<randint>
-// Note: QoS0 does not have a messageid, but it is not required to store.
-// so this func is not invoked.
-func createStoredMsgId(clientid string, m *proto.Publish) string {
-	r := rand.Int()
-
-	return fmt.Sprintf("%s-%v-%v", clientid, m.MessageId, r)
-}
-
 //StoreMsg
-func (mem *MemStorage) StoreMsg(clientid string, m *proto.Publish) (storedMsgId string) {
+func (mem *MemStorage) StoreMsg(clientid string, m *proto.Publish) (storedMsgId string, err error) {
 	storedMsgId = createStoredMsgId(clientid, m)
 
 	s := &StoredMsg{
@@ -94,7 +66,7 @@ func (mem *MemStorage) StoreMsg(clientid string, m *proto.Publish) (storedMsgId 
 	}
 	mem.StoredMessages[storedMsgId] = s
 
-	return storedMsgId
+	return storedMsgId, nil
 }
 
 //DeleteMsg
@@ -113,45 +85,58 @@ func (mem *MemStorage) Flush() {
 }
 
 //GetTopicClientList
-func (mem *MemStorage) GetTopicClientList(topic string) []string {
-	return mem.TopicTable[topic]
+func (mem *MemStorage) GetTopicClientList(topic string) ([]string, error) {
+	return mem.TopicTable[topic], nil
 }
 
-//GetClientConnection
-func (mem *MemStorage) GetClientConnection(clientid string) *Connection {
-	return mem.clients[clientid]
+//GetClientSession
+func (mem *MemStorage) GetClientSession(clientid string) (*Session, error) {
+	return mem.clients[clientid], nil
+}
+
+//SetClientSession
+func (mem *MemStorage) SetClientSession(clientid string, sess *Session) error {
+	mem.clients[clientid] = sess
+	return nil
 }
 
 //Subscribe
-func (mem *MemStorage) Subscribe(topic string, clientid string) {
+func (mem *MemStorage) Subscribe(topic string, clientid string) error {
 	mem.TopicTable[topic] = append(mem.TopicTable[topic], clientid)
+	return nil
 }
 
 //Unsubscribe
-func (mem *MemStorage) Unsubscribe(topic string, clientid string) {
+func (mem *MemStorage) Unsubscribe(topic string, clientid string) error {
 	a := mem.TopicTable[topic]
 	for i, cid := range a {
 		if clientid == cid {
 			mem.TopicTable[topic] = append(a[:i], a[i+1:]...)
 		}
 	}
+	return nil
 }
 
 //UpdateRetain
-func (mem *MemStorage) UpdateRetain(topic string, m *proto.Publish) {
+func (mem *MemStorage) UpdateRetain(topic string, m *proto.Publish) error {
 	//does not need lock or check exists. just update it
 	mem.RetainMap[topic] = m
+	return nil
 }
 
 //GetRetain
-func (mem *MemStorage) GetRetain(topic string) (*proto.Publish, bool) {
+func (mem *MemStorage) GetRetain(topic string) (*proto.Publish, error) {
 	m, ok := mem.RetainMap[topic]
-	return m, ok
+	if !ok {
+		return m, fmt.Errorf("Error getting retain topic")
+	}
+
+	return m, nil
 }
 
 func NewMemStorage() *MemStorage {
 	s := &MemStorage{
-		clients:        make(map[string]*Connection),
+		clients:        make(map[string]*Session),
 		TopicTable:     make(map[string][]string),
 		RetainMap:      make(map[string]*proto.Publish),
 		StoredMessages: make(map[string]*StoredMsg),

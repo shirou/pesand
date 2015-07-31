@@ -7,10 +7,11 @@ import (
 )
 
 type JWTAuth struct {
-	jwtKey string
+	allowAnonymous bool
+	jwtKey         []byte
 }
 
-func (b *JWTAuth) Auth(username string, jwtoken string) bool {
+func (j *JWTAuth) Auth(username string, jwtoken string) bool {
 
 	token, err := jwt.Parse(jwtoken, func(token *jwt.Token) (interface{}, error) {
 
@@ -18,18 +19,25 @@ func (b *JWTAuth) Auth(username string, jwtoken string) bool {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("Unexpected signing method: %v", token.Header["alg"])
 		}
-		return b.jwtKey, nil
+		return j.jwtKey, nil
 	})
 	if err != nil {
 		log.Error(err)
 		return false
 	}
 	if !token.Valid {
+		log.WithField("token", jwtoken).Warn("Token not valid")
 		return false
 	}
 
 	userid := token.Claims["sub"].(string) //get userid from token
 	if username != userid {
+
+		log.WithFields(log.Fields{
+			"conn user": username,
+			"jwt user":  userid,
+		}).Debug("jwtAuth Username")
+
 		return false
 	}
 
@@ -38,8 +46,13 @@ func (b *JWTAuth) Auth(username string, jwtoken string) bool {
 
 }
 
-func NewJWTAuth(key string) *JWTAuth {
+func (j *JWTAuth) AllowAnon() bool {
+	return j.allowAnonymous
+}
+
+func NewJWTAuth(key string, anon bool) *JWTAuth {
 	return &JWTAuth{
-		jwtKey: key,
+		allowAnonymous: anon,
+		jwtKey:         []byte(key),
 	}
 }

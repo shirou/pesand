@@ -1,10 +1,10 @@
 package main
 
 import (
-	//"github.com/golang/glog"
 	log "github.com/Sirupsen/logrus"
 	proto "github.com/huin/mqtt"
 	"net"
+	"sync"
 	"time"
 )
 
@@ -14,6 +14,8 @@ type Broker struct {
 	stats            Stats
 	storage          Storage
 	auth             Authorize
+	clientsMu        sync.Mutex
+	clients          map[string]*Connection
 	conf             *Config
 	Done             chan struct{}
 	StatsIntervalSec time.Duration
@@ -24,8 +26,9 @@ func NewBroker(conf Config, listen net.Listener) *Broker {
 		listen:           listen,
 		Port:             conf.Default.Port,
 		stats:            NewStats(),
-		storage:          NewMemStorage(),
-		auth:             NewJWTAuth(conf.Auth.JWTKey),
+		storage:          conf.ConfigStorage(),
+		auth:             conf.ConfigAuth(),
+		clients:          make(map[string]*Connection),
 		conf:             &conf,
 		Done:             make(chan struct{}),
 		StatsIntervalSec: time.Second * conf.Default.StatsIntervalSec,
@@ -37,7 +40,11 @@ func NewBroker(conf Config, listen net.Listener) *Broker {
 func (b *Broker) Auth(username string, password string) bool {
 	return b.auth.Auth(username, password)
 }
+func (b *Broker) AllowAnon() bool {
+	return b.auth.AllowAnon()
+}
 
+//Start
 func (b *Broker) Start() {
 
 	log.Info("Broker started")
@@ -51,6 +58,7 @@ func (b *Broker) Start() {
 
 			c := NewConnection(b, conn)
 			c.Start()
+
 			b.stats.clientConnect()
 		}
 		close(b.Done)
@@ -74,13 +82,34 @@ func (b *Broker) Start() {
 
 }
 
+//Publish
 func (b *Broker) Publish(m *proto.Publish) {
 	topic := m.TopicName
 	topics, _ := ExpandTopics(topic)
 	for _, t := range topics {
+
 		go func(t string) {
-			for _, clientid := range b.storage.GetTopicClientList(t) {
-				conn := b.storage.GetClientConnection(clientid)
+
+			list, err := b.storage.GetTopicClientList(t)
+			if err != nil {
+				log.WithField("topic", t).
+					Error(err)
+			}
+
+			for _, clientid := range list {
+				//sess, err := b.storage.GetClientSession(clientid)
+				b.clientsMu.Lock()
+				conn, ok := b.clients[clientid]
+				for k, _ := range b.clients {
+					log.Println(k)
+				}
+				b.clientsMu.Unlock()
+
+				if !ok {
+					log.WithFields(log.Fields{"topic": t, "clientID": clientid}).
+						Error("clientsList conn not ok")
+					continue
+				}
 				conn.submit(m)
 				b.stats.messageSend()
 			}
@@ -88,32 +117,50 @@ func (b *Broker) Publish(m *proto.Publish) {
 	}
 }
 
+//UpdateRetain
 func (b *Broker) UpdateRetain(m *proto.Publish) {
 	topics, _ := ExpandTopics(m.TopicName)
 	for _, t := range topics {
-		b.storage.UpdateRetain(t, m)
+		err := b.storage.UpdateRetain(t, m)
+		if err != nil {
+			log.WithField("topic", t).
+				Errorf("UpdateRetain error %v", err)
+		}
 	}
 }
-func (b *Broker) GetRetain(topic string) (*proto.Publish, bool) {
-	m, ok := b.storage.GetRetain(topic)
-	return m, ok
+
+//GetRetain
+func (b *Broker) GetRetain(topic string) (*proto.Publish, error) {
+	m, err := b.storage.GetRetain(topic)
+	return m, err
 }
 
-func (b *Broker) Subscribe(topic string, conn *Connection) {
+//Subscribe
+func (b *Broker) Subscribe(topic string, sess *Session) {
 
-	log.WithFields(log.Fields{"topic": topic, "clientID": conn.clientid}).
+	log.WithFields(log.Fields{"topic": topic, "clientID": sess.Clientid}).
 		Info("Subscribe")
 
-	b.storage.Subscribe(topic, conn.clientid)
+	err := b.storage.Subscribe(topic, sess.Clientid)
+	if err != nil {
+		log.WithFields(log.Fields{"topic": topic, "clientID": sess.Clientid}).
+			Errorf("Subscribe error %v", err)
+	}
 }
 
-func (b *Broker) Unsubscribe(topic string, conn *Connection) {
+//Unsubscribe
+func (b *Broker) Unsubscribe(topic string, sess *Session) {
 
-	log.WithFields(log.Fields{"topic": topic, "clientID": conn.clientid}).
+	log.WithFields(log.Fields{"topic": topic, "clientID": sess.Clientid}).
 		Info("Unsubscribe")
 
 	topics, _ := ExpandTopics(topic)
 	for _, t := range topics {
-		b.storage.Unsubscribe(t, conn.clientid)
+		err := b.storage.Unsubscribe(t, sess.Clientid)
+		if err != nil {
+			log.WithFields(log.Fields{"topic": topic, "clientID": sess.Clientid}).
+				Errorf("Unsubscribe error %v", err)
+		}
+
 	}
 }

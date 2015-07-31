@@ -6,7 +6,6 @@ import (
 	log "github.com/Sirupsen/logrus"
 	proto "github.com/huin/mqtt"
 	"net"
-	"sync"
 	"time"
 )
 
@@ -27,22 +26,25 @@ const (
 	ClientDisconnectedNormally
 )
 
+type Session struct {
+	Clientid    string
+	Status      uint8
+	TopicList   []string // Subscribed topic list
+	LastUpdated time.Time
+	SendingMsgs *StoredQueue // msgs which not sent
+	SentMsgs    *StoredQueue // msgs which already sent
+	WillMsg     *proto.Publish
+	Username    string
+}
+
 type Connection struct {
+	Conn              net.Conn
 	broker            *Broker
-	conn              net.Conn
-	clientid          string
-	storage           Storage
 	jobs              chan job
-	Done              chan struct{}
-	Status            uint8
-	TopicList         []string // Subscribed topic list
-	LastUpdated       time.Time
-	SendingMsgs       *StoredQueue // msgs which not sent
-	SentMsgs          *StoredQueue // msgs which already sent
-	WillMsg           *proto.Publish
 	KeepAliveTimer    uint16
 	lastKeepAliveTime time.Time
-	Username          string
+	sess              *Session
+	//Done              chan struct{}
 }
 
 type job struct {
@@ -61,23 +63,23 @@ func (r receipt) wait() {
 
 func (c *Connection) handleConnection() {
 	defer func() {
-		c.conn.Close()
+		c.Conn.Close()
 		close(c.jobs)
 	}()
 
 	for {
-		clientLog := log.WithField("clientid", c.clientid)
-		m, err := proto.DecodeOneMessage(c.conn, nil)
+		clientLog := log.WithField("clientid", c.sess.Clientid)
+		m, err := proto.DecodeOneMessage(c.Conn, nil)
 		if err != nil {
 
 			clientLog.Warnf("disconnected unexpectedly: %s", err)
 
-			if c.WillMsg != nil {
+			if c.sess.WillMsg != nil {
 				clientLog.Info("Sending Will message")
-				c.handlePublish(c.WillMsg)
+				c.handlePublish(c.sess.WillMsg)
 			}
 
-			c.Status = ClientUnAvailable
+			c.sess.Status = ClientUnAvailable
 			return
 		}
 		clientLog.Infof("incoming msg type: %T", m)
@@ -98,7 +100,7 @@ func (c *Connection) handleConnection() {
 			c.submit(&proto.PingResp{})
 		case *proto.Disconnect:
 			c.handleDisconnect(m)
-			c.Status = ClientDisconnectedNormally
+			c.sess.Status = ClientDisconnectedNormally
 			return
 		case *proto.Subscribe:
 			c.handleSubscribe(m)
@@ -122,25 +124,31 @@ func (c *Connection) handleSubscribe(m *proto.Subscribe) {
 		TopicsQos: make([]proto.QosLevel, len(m.Topics)),
 	}
 	for i, tq := range m.Topics {
-		c.broker.Subscribe(tq.Topic, c)
+
+		c.broker.Subscribe(tq.Topic, c.sess)
 		suback.TopicsQos[i] = tq.Qos
 
-		c.TopicList = append(c.TopicList, tq.Topic)
+		c.sess.TopicList = append(c.sess.TopicList, tq.Topic)
 	}
 	c.submit(suback)
 
 	// Process retained messages.
 	for _, tq := range m.Topics {
-		if pubmsg, ok := c.broker.storage.GetRetain(tq.Topic); ok {
-			c.submit(pubmsg)
+		pubmsg, err := c.broker.storage.GetRetain(tq.Topic)
+		if err != nil {
+			log.WithField("topic", tq).
+				Error(err)
+			continue
 		}
+		c.submit(pubmsg)
+
 	}
 }
 
 //handleUnsubscribe
 func (c *Connection) handleUnsubscribe(m *proto.Unsubscribe) {
 	for _, topic := range m.Topics {
-		c.broker.Unsubscribe(topic, c)
+		c.broker.Unsubscribe(topic, c.sess)
 	}
 	ack := &proto.UnsubAck{MessageId: m.MessageId}
 	c.submit(ack)
@@ -174,20 +182,16 @@ func (c *Connection) handleConnect(m *proto.Connect) {
 		return
 	}
 
-	if m.UsernameFlag {
-		if c.broker.Auth(m.Username, m.Password) == false {
+	//authorize connection
+	if ok := c.authorizeConn(m); !ok {
+		log.WithFields(log.Fields{"username": m.Username, "addr": c.Conn.RemoteAddr()}).
+			Warn("Authorization Failed")
 
-			log.WithFields(log.Fields{"username": m.Username, "addr": c.conn.RemoteAddr()}).
-				Warn("Authorization Failed")
-
-			connack := &proto.ConnAck{
-				ReturnCode: proto.RetCodeNotAuthorized,
-			}
-			c.submit(connack)
-			return
-		} else {
-			c.Username = m.Username
+		connack := &proto.ConnAck{
+			ReturnCode: proto.RetCodeNotAuthorized,
 		}
+		c.submit(connack)
+		return
 	}
 
 	// Check client id.
@@ -198,18 +202,31 @@ func (c *Connection) handleConnect(m *proto.Connect) {
 		c.submit(connack)
 		return
 	}
-	c.clientid = m.ClientId
+	c.sess.Clientid = m.ClientId
 
 	clean := 0
 	if m.CleanSession {
 		clean = 1
 	}
 
-	currrent_c, err := c.storage.MergeClient(c.clientid, c, clean)
+	var err error
+	c.sess, err = c.broker.storage.MergeClientSession(c.sess.Clientid, c.sess, clean)
 	if err != nil {
-		c.storage.DeleteClient(c.clientid, c)
+		log.WithFields(log.Fields{"clientid": c.sess.Clientid,
+			"clean":     clean,
+			"keepAlive": m.KeepAliveTimer}).Errorf("MergeSession Error %s", err)
+		c.broker.storage.DeleteClientSession(c.sess.Clientid)
+		if err != nil {
+			log.WithField("Clientid", c.sess.Clientid).Errorf("DeleteClientSession %v", err)
+		}
 		return
 	}
+
+	//seems like a bad idea?
+	log.Printf("save connection %s", c.sess.Clientid)
+	c.broker.clientsMu.Lock()
+	c.broker.clients[c.sess.Clientid] = c
+	c.broker.clientsMu.Unlock()
 
 	if m.WillFlag {
 		header := proto.Header{
@@ -218,7 +235,7 @@ func (c *Connection) handleConnect(m *proto.Connect) {
 			Retain:   m.WillRetain,
 		}
 
-		c.WillMsg = &proto.Publish{
+		c.sess.WillMsg = &proto.Publish{
 			Header:    header,
 			TopicName: m.WillTopic,
 			Payload:   newStringPayload(m.WillMessage),
@@ -228,20 +245,23 @@ func (c *Connection) handleConnect(m *proto.Connect) {
 	connack := &proto.ConnAck{
 		ReturnCode: proto.RetCodeAccepted,
 	}
-	currrent_c.submit(connack)
+	c.submit(connack)
 
-	log.WithFields(log.Fields{"clientid": currrent_c.clientid,
-		"addr":      currrent_c.conn.RemoteAddr(),
+	log.WithFields(log.Fields{"clientid": c.sess.Clientid,
+		"addr":      c.Conn.RemoteAddr(),
 		"clean":     clean,
 		"keepAlive": m.KeepAliveTimer}).Info("New client connected")
 }
 
 //handleDisconnect
 func (c *Connection) handleDisconnect(m *proto.Disconnect) {
-	for _, topic := range c.TopicList {
-		c.broker.Unsubscribe(topic, c)
+	for _, topic := range c.sess.TopicList {
+		c.broker.Unsubscribe(topic, c.sess)
 	}
-	c.storage.DeleteClient(c.clientid, c)
+	err := c.broker.storage.DeleteClientSession(c.sess.Clientid)
+	if err != nil {
+		log.WithField("Clientid", c.sess.Clientid).Errorf("DeleteClientSession %v", err)
+	}
 	c.broker.stats.clientDisconnect()
 }
 
@@ -317,16 +337,20 @@ func (c *Connection) submit(m proto.Message) {
 			"MsgID":   pubm.MessageId}).Debugf("msg send body")
 
 		if pubm.Header.QosLevel != proto.QosAtLeastOnce {
-			storedMsgId = c.broker.storage.StoreMsg(c.clientid, pubm)
+			storedMsgId, err := c.broker.storage.StoreMsg(c.sess.Clientid, pubm)
+			if err != nil {
+				log.Error(err)
+				return
+			}
 
 			log.WithField("MsgID", storedMsgId).Debug("msg stored")
 
-			c.SendingMsgs.Put(storedMsgId)
+			c.sess.SendingMsgs.Push(storedMsgId)
 		}
 	}
 
-	if c.Status != ClientAvailable {
-		log.WithField("clientid", c.clientid).Info("msg sent to non-available client, msg stored")
+	if c.sess.Status != ClientAvailable {
+		log.WithField("clientid", c.sess.Clientid).Info("msg sent to non-available client, msg stored")
 		return
 	}
 
@@ -350,14 +374,14 @@ func (c *Connection) submitSync(m proto.Message) receipt {
 //writer
 func (c *Connection) writer() {
 	defer func() {
-		log.WithField("clientid", c.clientid).Info("writer close")
-		c.conn.Close()
+		log.WithField("clientid", c.sess.Clientid).Info("writer close")
+		c.Conn.Close()
 	}()
 
 	for job := range c.jobs {
 
 		log.WithFields(log.Fields{
-			"clientID": c.clientid,
+			"clientID": c.sess.Clientid,
 			"msgType":  job.m,
 		}).Debug("sending msg")
 
@@ -368,7 +392,7 @@ func (c *Connection) writer() {
 		}
 
 		// TODO: write timeout
-		err := job.m.Encode(c.conn)
+		err := job.m.Encode(c.Conn)
 
 		if err != nil {
 			log.Warnf("writer error: ", err)
@@ -376,8 +400,8 @@ func (c *Connection) writer() {
 		}
 		// if storedmsgid is set, (QoS 1 or 2) move to sentQueue
 		if job.storedmsgid != "" {
-			c.SendingMsgs.Get() // TODO: it assumes Queue is FIFO
-			c.SentMsgs.Put(job.storedmsgid)
+			c.sess.SendingMsgs.Pop() // TODO: it assumes Queue is FIFO
+			c.sess.SentMsgs.Push(job.storedmsgid)
 
 			log.WithField("msgID", job.storedmsgid).Debug("msg moved to SentMsgs")
 		}
@@ -393,98 +417,55 @@ func (c *Connection) Start() {
 	go c.writer()
 }
 
+//authorizeConn
+func (c *Connection) authorizeConn(m *proto.Connect) bool {
+
+	if !c.broker.AllowAnon() { //authorization required
+
+		if !m.UsernameFlag { //if no user name flag
+			return false
+		}
+
+		if !c.broker.Auth(m.Username, m.Password) { //if authorization failed
+			return false
+		}
+
+		c.sess.Username = m.Username
+		return true //auth success
+
+	} else { //authorization not required
+
+		if m.UsernameFlag { //optionally you can still authorize
+			if c.broker.Auth(m.Username, m.Password) == false {
+				return false //authoization attempt failed
+			} else {
+				c.sess.Username = m.Username //auth success
+				return true
+			}
+		}
+		return true //anonymous connection
+
+	}
+}
+
+//NewConnection
 func NewConnection(b *Broker, conn net.Conn) *Connection {
 	c := &Connection{
-		broker:      b,
-		conn:        conn,
-		storage:     b.storage,
-		jobs:        make(chan job, b.conf.Queue.SendingQueueLength),
-		Status:      ClientAvailable,
-		LastUpdated: time.Now(),
-		SendingMsgs: NewStoredQueue(b.conf.Queue.SendingQueueLength),
-		SentMsgs:    NewStoredQueue(b.conf.Queue.SentQueueLength),
-		//		out:      make(chan job, clientQueueLength),
-		//		Incoming: make(chan *proto.Publish, clientQueueLength),
-		//		done:     make(chan struct{}),
-		//		connack:  make(chan *proto.ConnAck),
-		//		suback:   make(chan *proto.SubAck),
+		broker: b,
+		Conn:   conn,
+		jobs:   make(chan job, b.conf.Queue.SendingQueueLength),
+		sess: &Session{
+			Status:      ClientAvailable,
+			LastUpdated: time.Now(),
+			SendingMsgs: NewStoredQueue(), //NewStoredQueue(b.conf.Queue.SendingQueueLength),
+			SentMsgs:    NewStoredQueue(), //NewStoredQueue(b.conf.Queue.SentQueueLength),
+			//		WillMsg:     &proto.Publish{},
+			//		out:      make(chan job, clientQueueLength),
+			//		Incoming: make(chan *proto.Publish, clientQueueLength),
+			//		done:     make(chan struct{}),
+			//		connack:  make(chan *proto.ConnAck),
+			//		suback:   make(chan *proto.SubAck),
+		},
 	}
 	return c
-}
-
-//
-// StoredQueue is a fixed length queue to store messages in a connection.
-//
-// XXX: should be use container/list ?
-// http://bl.ocks.org/dz1984/6963545
-
-type storedQueueNode struct {
-	storedMsgId string
-	next        *storedQueueNode
-}
-
-type StoredQueue struct {
-	head  *storedQueueNode
-	tail  *storedQueueNode
-	count int
-	max   int
-	lock  *sync.Mutex
-}
-
-func NewStoredQueue(max int) *StoredQueue {
-	return &StoredQueue{
-		lock: &sync.Mutex{},
-		max:  max,
-	}
-}
-
-func (q *storedQueueNode) Next() *storedQueueNode {
-	return q.Next()
-}
-
-func (q *StoredQueue) Len() int {
-	q.lock.Lock()
-	defer q.lock.Unlock()
-
-	return q.count
-}
-
-func (q *StoredQueue) Put(storedMsgId string) {
-	q.lock.Lock()
-
-	n := &storedQueueNode{storedMsgId: storedMsgId}
-
-	if q.tail == nil {
-		q.tail = n
-		q.head = n
-	} else {
-		q.tail.next = n
-		q.tail = n
-	}
-	q.count++
-
-	if q.count > q.max {
-		q.lock.Unlock()
-		q.Get()
-		return
-	}
-	q.lock.Unlock()
-}
-func (q *StoredQueue) Get() string {
-	q.lock.Lock()
-	defer q.lock.Unlock()
-
-	n := q.head
-	if n == nil {
-		return ""
-	}
-
-	q.head = n.next
-
-	if q.head == nil {
-		q.tail = nil
-	}
-	q.count--
-
-	return n.storedMsgId
 }
