@@ -6,10 +6,15 @@ import (
 	"testing"
 )
 
-func TestUpdateRetain(t *testing.T) {
+func TestRethinkUpdateRetain(t *testing.T) {
 	//var topic string
 	topic := "/a/b/c"
-	mem := NewMemStorage()
+	// Load config file
+	conf, err := NewConfig("pesand.conf")
+	if err != nil {
+		t.Errorf("could not load config: %s", err)
+	}
+	db := NewRethinkStorage(conf.RethinkDB.Url, conf.RethinkDB.Port, conf.RethinkDB.DbName, conf.RethinkDB.AuthKey)
 
 	origm := &proto.Publish{
 		Header: proto.Header{
@@ -20,24 +25,27 @@ func TestUpdateRetain(t *testing.T) {
 		TopicName: "/a/b/c",
 		Payload:   proto.BytesPayload{1, 2, 3},
 	}
-	mem.UpdateRetain(topic, origm)
-	if m, err := mem.GetRetain(topic); err == nil {
+	err = db.UpdateRetain(topic, origm)
+	if err != nil {
+		t.Errorf("could not update: %s", err)
+	}
+	if m, err := db.GetRetain(topic); err == nil {
 		if origm.TopicName != m.TopicName {
-			t.Errorf("could not update: %v", topic)
+			t.Errorf("could not get update: %v", topic)
 		}
 	} else {
-		t.Errorf("could not update: %v", topic)
+		t.Errorf("could not get update %v topic: %v", err, topic)
 	}
 
 	// Same topic Again
 	origm.MessageId = 0x1234
-	mem.UpdateRetain(topic, origm)
-	if m, err := mem.GetRetain(topic); err == nil {
+	db.UpdateRetain(topic, origm)
+	if m, err := db.GetRetain(topic); err == nil {
 		if m.MessageId != 0x1234 {
 			t.Errorf("could not update: %v", topic)
 		}
 	} else {
-		t.Errorf("could not update: %v", topic)
+		t.Errorf("could not update %v topic: %v", err, topic)
 	}
 
 	// Other topic
@@ -51,13 +59,13 @@ func TestUpdateRetain(t *testing.T) {
 		TopicName: topic2,
 		Payload:   proto.BytesPayload{1, 2, 3},
 	}
-	mem.UpdateRetain(topic2, m2)
-	if m, err := mem.GetRetain(topic2); err == nil {
+	db.UpdateRetain(topic2, m2)
+	if m, err := db.GetRetain(topic2); err == nil {
 		if m.TopicName != topic2 {
 			t.Errorf("could not update: %v", topic2)
 		}
 		// check existing topic
-		if mm, err := mem.GetRetain(topic); err == nil {
+		if mm, err := db.GetRetain(topic); err == nil {
 			if mm.TopicName == m.TopicName {
 				t.Errorf("Duplicated message")
 			}
@@ -71,42 +79,52 @@ func TestUpdateRetain(t *testing.T) {
 
 }
 
-func TestSubscribe(t *testing.T) {
+func TestRethinkSubscribe(t *testing.T) {
 	var topic string
 	var cid string
 	var cid2 string
-	mem := NewMemStorage()
+	conf, err := NewConfig("pesand.conf")
+	if err != nil {
+		t.Errorf("could not load config: %s", err)
+	}
+	db := NewRethinkStorage(conf.RethinkDB.Url, conf.RethinkDB.Port, conf.RethinkDB.DbName, conf.RethinkDB.AuthKey)
 
 	topic = "/a/b/c"
 
 	cid = "cid1"
-	mem.Subscribe(topic, cid)
-	if reflect.DeepEqual(mem.TopicTable[topic], []string{cid}) != true {
+	db.Subscribe(topic, cid)
+	val, _ := db.GetTopicClientList(topic)
+	if reflect.DeepEqual(val, []string{cid}) != true {
 		t.Errorf("clientid not found: %v", cid)
 	}
 
 	cid2 = "cid2"
-	mem.Subscribe(topic, cid2)
-	if reflect.DeepEqual(mem.TopicTable[topic], []string{cid, cid2}) != true {
+	db.Subscribe(topic, cid2)
+	val, _ = db.GetTopicClientList(topic)
+	if reflect.DeepEqual(val, []string{cid, cid2}) != true {
 		t.Errorf("clientid not found: %v", cid2)
 	}
 
-	mem.Unsubscribe(topic, cid)
-	for _, c := range mem.TopicTable[topic] {
+	db.Unsubscribe(topic, cid)
+	val, _ = db.GetTopicClientList(topic)
+	for _, c := range val {
 		if c == cid {
 			t.Errorf("Unsubscribed id found: %v", cid)
 		}
 	}
 
-	mem.Unsubscribe(topic, cid2)
-	for _, c := range mem.TopicTable[topic] {
+	db.Unsubscribe(topic, cid2)
+	val, _ = db.GetTopicClientList(topic)
+	for _, c := range val {
 		if c == cid2 {
 			t.Errorf("Unsubscribed id found: %v", cid2)
 		}
 	}
 
 }
-func TestcreateStoredMsgId(t *testing.T) {
+
+/*
+func TestBoltCreateStoredMsgId(t *testing.T) {
 	m := &proto.Publish{
 		Header: proto.Header{
 			DupFlag:  false,
@@ -136,4 +154,4 @@ func TestcreateStoredMsgId(t *testing.T) {
 		t.Errorf("StoredMsgId creating failed")
 	}
 
-}
+}*/

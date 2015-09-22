@@ -2,10 +2,10 @@ package main
 
 import (
 	"errors"
-	"github.com/golang/glog"
+	"fmt"
+	log "github.com/Sirupsen/logrus"
 	proto "github.com/huin/mqtt"
 	"net"
-	"sync"
 	"time"
 )
 
@@ -26,22 +26,25 @@ const (
 	ClientDisconnectedNormally
 )
 
+type Session struct {
+	Clientid    string
+	Status      uint8
+	TopicList   []string // Subscribed topic list
+	LastUpdated time.Time
+	SendingMsgs *StoredQueue // msgs which not sent
+	SentMsgs    *StoredQueue // msgs which already sent
+	WillMsg     *proto.Publish
+	Username    string
+}
+
 type Connection struct {
+	Conn              net.Conn
 	broker            *Broker
-	conn              net.Conn
-	clientid          string
-	storage           Storage
 	jobs              chan job
-	Done              chan struct{}
-	Status            uint8
-	TopicList         []string // Subscribed topic list
-	LastUpdated       time.Time
-	SendingMsgs       *StoredQueue // msgs which not sent
-	SentMsgs          *StoredQueue // msgs which already sent
-	WillMsg           *proto.Publish
 	KeepAliveTimer    uint16
 	lastKeepAliveTime time.Time
-	Username          string
+	sess              *Session
+	//Done              chan struct{}
 }
 
 type job struct {
@@ -60,24 +63,26 @@ func (r receipt) wait() {
 
 func (c *Connection) handleConnection() {
 	defer func() {
-		c.conn.Close()
+		c.Conn.Close()
 		close(c.jobs)
 	}()
 
 	for {
-		m, err := proto.DecodeOneMessage(c.conn, nil)
+		clientLog := log.WithField("clientid", c.sess.Clientid)
+		m, err := proto.DecodeOneMessage(c.Conn, nil)
 		if err != nil {
-			glog.Infof("disconnected unexpectedly (%s): %s", c.clientid, err)
 
-			if c.WillMsg != nil {
-				glog.Infof("Send Will message of %s", c.clientid)
-				c.handlePublish(c.WillMsg)
+			clientLog.Warnf("disconnected unexpectedly: %s", err)
+
+			if c.sess.WillMsg != nil {
+				clientLog.Info("Sending Will message")
+				c.handlePublish(c.sess.WillMsg)
 			}
 
-			c.Status = ClientUnAvailable
+			c.sess.Status = ClientUnAvailable
 			return
 		}
-		glog.V(2).Infof("incoming: %T from %v", m, c.clientid)
+		clientLog.Infof("incoming msg type: %T", m)
 		switch m := m.(type) {
 		case *proto.Connect:
 			c.handleConnect(m)
@@ -95,19 +100,20 @@ func (c *Connection) handleConnection() {
 			c.submit(&proto.PingResp{})
 		case *proto.Disconnect:
 			c.handleDisconnect(m)
-			c.Status = ClientDisconnectedNormally
+			c.sess.Status = ClientDisconnectedNormally
 			return
 		case *proto.Subscribe:
 			c.handleSubscribe(m)
 		case *proto.Unsubscribe:
 			c.handleUnsubscribe(m)
 		default:
-			glog.Infof("reader: unknown msg type %T, continue anyway", m)
+			clientLog.Warnf("unknown msg type %T, continue.", m)
 		}
 		continue // loop until Disconnect comes.
 	}
 }
 
+//handleSubscribe
 func (c *Connection) handleSubscribe(m *proto.Subscribe) {
 	if m.Header.QosLevel != proto.QosAtLeastOnce {
 		// protocol error, silent discarded(not disconnect)
@@ -118,29 +124,37 @@ func (c *Connection) handleSubscribe(m *proto.Subscribe) {
 		TopicsQos: make([]proto.QosLevel, len(m.Topics)),
 	}
 	for i, tq := range m.Topics {
-		c.broker.Subscribe(tq.Topic, c)
+
+		c.broker.Subscribe(tq.Topic, c.sess)
 		suback.TopicsQos[i] = tq.Qos
 
-		c.TopicList = append(c.TopicList, tq.Topic)
+		c.sess.TopicList = append(c.sess.TopicList, tq.Topic)
 	}
 	c.submit(suback)
 
 	// Process retained messages.
 	for _, tq := range m.Topics {
-		if pubmsg, ok := c.broker.storage.GetRetain(tq.Topic); ok {
-			c.submit(pubmsg)
+		pubmsg, err := c.broker.storage.GetRetain(tq.Topic)
+		if err != nil {
+			log.WithField("topic", tq).
+				Error(err)
+			continue
 		}
+		c.submit(pubmsg)
+
 	}
 }
 
+//handleUnsubscribe
 func (c *Connection) handleUnsubscribe(m *proto.Unsubscribe) {
 	for _, topic := range m.Topics {
-		c.broker.Unsubscribe(topic, c)
+		c.broker.Unsubscribe(topic, c.sess)
 	}
 	ack := &proto.UnsubAck{MessageId: m.MessageId}
 	c.submit(ack)
 }
 
+//handleConnect
 func (c *Connection) handleConnect(m *proto.Connect) {
 	protoValidate := true
 	switch m.ProtocolName {
@@ -155,8 +169,12 @@ func (c *Connection) handleConnect(m *proto.Connect) {
 	default:
 		protoValidate = false
 	}
+
 	if protoValidate == false {
-		glog.Warningf("reader: reject connection from ", m.ProtocolName, " version ", m.ProtocolVersion)
+
+		log.WithFields(log.Fields{"name": m.ProtocolName, "version": m.ProtocolVersion}).
+			Warn("reject connection")
+
 		connack := &proto.ConnAck{
 			ReturnCode: proto.RetCodeUnacceptableProtocolVersion,
 		}
@@ -164,17 +182,16 @@ func (c *Connection) handleConnect(m *proto.Connect) {
 		return
 	}
 
-	if m.UsernameFlag {
-		if c.broker.Auth(m.Username, m.Password) == false {
-			glog.Warningf("Auth failed: %s, %s", m.Username, c.conn.RemoteAddr())
-			connack := &proto.ConnAck{
-				ReturnCode: proto.RetCodeNotAuthorized,
-			}
-			c.submit(connack)
-			return
-		} else {
-			c.Username = m.Username
+	//authorize connection
+	if ok := c.authorizeConn(m); !ok {
+		log.WithFields(log.Fields{"username": m.Username, "addr": c.Conn.RemoteAddr()}).
+			Warn("Authorization Failed")
+
+		connack := &proto.ConnAck{
+			ReturnCode: proto.RetCodeNotAuthorized,
 		}
+		c.submit(connack)
+		return
 	}
 
 	// Check client id.
@@ -185,18 +202,31 @@ func (c *Connection) handleConnect(m *proto.Connect) {
 		c.submit(connack)
 		return
 	}
-	c.clientid = m.ClientId
+	c.sess.Clientid = m.ClientId
 
 	clean := 0
 	if m.CleanSession {
 		clean = 1
 	}
 
-	currrent_c, err := c.storage.MergeClient(c.clientid, c, clean)
+	var err error
+	c.sess, err = c.broker.storage.MergeClientSession(c.sess.Clientid, c.sess, clean)
 	if err != nil {
-		c.storage.DeleteClient(c.clientid, c)
+		log.WithFields(log.Fields{"clientid": c.sess.Clientid,
+			"clean":     clean,
+			"keepAlive": m.KeepAliveTimer}).Errorf("MergeSession Error %s", err)
+		c.broker.storage.DeleteClientSession(c.sess.Clientid)
+		if err != nil {
+			log.WithField("Clientid", c.sess.Clientid).Errorf("DeleteClientSession %v", err)
+		}
 		return
 	}
+
+	//seems like a bad idea?
+	log.Printf("save connection %s", c.sess.Clientid)
+	c.broker.clientsMu.Lock()
+	c.broker.clients[c.sess.Clientid] = c
+	c.broker.clientsMu.Unlock()
 
 	if m.WillFlag {
 		header := proto.Header{
@@ -205,7 +235,7 @@ func (c *Connection) handleConnect(m *proto.Connect) {
 			Retain:   m.WillRetain,
 		}
 
-		c.WillMsg = &proto.Publish{
+		c.sess.WillMsg = &proto.Publish{
 			Header:    header,
 			TopicName: m.WillTopic,
 			Payload:   newStringPayload(m.WillMessage),
@@ -215,84 +245,112 @@ func (c *Connection) handleConnect(m *proto.Connect) {
 	connack := &proto.ConnAck{
 		ReturnCode: proto.RetCodeAccepted,
 	}
-	currrent_c.submit(connack)
+	c.submit(connack)
 
-	glog.V(2).Infof("New client connected from %v as %v (c%v, k%v).", currrent_c.conn.RemoteAddr(), currrent_c.clientid, clean, m.KeepAliveTimer)
+	log.WithFields(log.Fields{"clientid": c.sess.Clientid,
+		"addr":      c.Conn.RemoteAddr(),
+		"clean":     clean,
+		"keepAlive": m.KeepAliveTimer}).Info("New client connected")
 }
 
+//handleDisconnect
 func (c *Connection) handleDisconnect(m *proto.Disconnect) {
-	for _, topic := range c.TopicList {
-		c.broker.Unsubscribe(topic, c)
+	for _, topic := range c.sess.TopicList {
+		c.broker.Unsubscribe(topic, c.sess)
 	}
-	c.storage.DeleteClient(c.clientid, c)
+	err := c.broker.storage.DeleteClientSession(c.sess.Clientid)
+	if err != nil {
+		log.WithField("Clientid", c.sess.Clientid).Errorf("DeleteClientSession %v", err)
+	}
 	c.broker.stats.clientDisconnect()
 }
 
+//handlePublish
 func (c *Connection) handlePublish(m *proto.Publish) {
 	c.broker.Publish(m)
 
 	if m.Header.Retain {
 		c.broker.UpdateRetain(m)
-		glog.V(2).Infof("Publish msg retained: %s", m.TopicName)
+		log.WithField("topic", m.TopicName).Info("Publish msg retained")
 	}
 
-	glog.V(2).Infof("recv body:%d, %s, %v", m.Header.QosLevel, m.Payload, m.MessageId)
+	log.WithFields(log.Fields{
+		"QOS":     m.Header.QosLevel,
+		"Payload": m.Payload,
+		"MsgID":   m.MessageId}).Debug("msg recv body")
+
 	switch m.Header.QosLevel {
 	case proto.QosAtMostOnce:
 		// do nothing
 		break
 	case proto.QosAtLeastOnce:
 		c.submit(&proto.PubAck{MessageId: m.MessageId})
-		glog.V(2).Infof("QoS1: Puback sent: %v", m.MessageId)
+		log.WithField("MsgID", m.MessageId).Debug("QoS1: Puback sent")
 		break
 	case proto.QosExactlyOnce:
 		c.submit(&proto.PubRec{MessageId: m.MessageId})
-		glog.V(2).Infof("QoS2: Pubrec sent: %v", m.MessageId)
+		log.WithField("MsgID", m.MessageId).Debug("QoS2: Pubrec sent")
 		break
 	default:
-		glog.Warningf("Wrong QosLevel on Publish: %v", m.Header.QosLevel)
+		log.WithField("QoS", m.Header.QosLevel).Warn("Wrong QosLevel on Publish")
 		break
 	}
 
 	c.broker.stats.messageRecv()
 }
 
+//handlePubAck
 func (c *Connection) handlePubAck(m *proto.PubAck) {
 	// TODO:
-	glog.V(2).Infof("PubAck recieved: %v", m.MessageId)
+	log.WithField("MsgID", m.MessageId).Debug("PubAck recieved")
 }
 
+//handlePubRel
 func (c *Connection) handlePubRel(m *proto.PubRel) {
 	// TODO:
 	c.submit(&proto.PubComp{MessageId: m.MessageId})
-	glog.V(2).Infof("PubComp sent: %v", m.MessageId)
+	log.WithField("MsgID", m.MessageId).Debug("PubComp sent")
 }
 
+//handlePubRec
 func (c *Connection) handlePubRec(m *proto.PubRec) {
 	// TODO:
 	c.submit(&proto.PubRel{MessageId: m.MessageId})
-	glog.V(2).Infof("PubRel sent: %v", m.MessageId)
-}
-func (c *Connection) handlePubComp(m *proto.PubComp) {
-	// TODO:
-	glog.V(2).Infof("PubComp received: %v", m.MessageId)
+	log.WithField("MsgID", m.MessageId).Debug("PubRel sent")
 }
 
-// Queue a message; no notification of sending is done.
+//handlePubComp
+func (c *Connection) handlePubComp(m *proto.PubComp) {
+	// TODO:
+	log.WithField("MsgID", m.MessageId).Debug("PubComp received")
+}
+
+//submit queues a message; no notification of sending is done.
 func (c *Connection) submit(m proto.Message) {
 	storedMsgId := ""
 	switch pubm := m.(type) {
 	case *proto.Publish:
-		glog.V(2).Infof("send body:%s, %T, %d", pubm.Payload, pubm.Payload, pubm.MessageId)
+
+		log.WithFields(log.Fields{
+			"Payload": pubm.Payload,
+			"Type":    fmt.Sprintf("%T", pubm.Payload),
+			"MsgID":   pubm.MessageId}).Debugf("msg send body")
+
 		if pubm.Header.QosLevel != proto.QosAtLeastOnce {
-			storedMsgId = c.broker.storage.StoreMsg(c.clientid, pubm)
-			glog.V(2).Infof("msg stored: %s", storedMsgId)
-			c.SendingMsgs.Put(storedMsgId)
+			storedMsgId, err := c.broker.storage.StoreMsg(c.sess.Clientid, pubm)
+			if err != nil {
+				log.Error(err)
+				return
+			}
+
+			log.WithField("MsgID", storedMsgId).Debug("msg stored")
+
+			c.sess.SendingMsgs.Push(storedMsgId)
 		}
 	}
 
-	if c.Status != ClientAvailable {
-		glog.Infof("msg sent to non-available client, msg stored: %s", c.clientid)
+	if c.sess.Status != ClientAvailable {
+		log.WithField("clientid", c.sess.Clientid).Info("msg sent to non-available client, msg stored")
 		return
 	}
 
@@ -300,12 +358,12 @@ func (c *Connection) submit(m proto.Message) {
 	select {
 	case c.jobs <- j:
 	default:
-		glog.Warningf("%v: failed to submit message", c)
+		log.WithField("connection", c).Warn("failed to submit message")
 	}
 	return
 }
 
-// Queue a message, returns a channel that will be readable
+//submitSync queues a message, returns a channel that will be readable
 // when the message is sent.
 func (c *Connection) submitSync(m proto.Message) receipt {
 	j := job{m: m, r: make(receipt)}
@@ -313,33 +371,39 @@ func (c *Connection) submitSync(m proto.Message) receipt {
 	return j.r
 }
 
+//writer
 func (c *Connection) writer() {
 	defer func() {
-		glog.Infof("writer close: %s", c.clientid)
-		c.conn.Close()
+		log.WithField("clientid", c.sess.Clientid).Info("writer close")
+		c.Conn.Close()
 	}()
 
 	for job := range c.jobs {
-		glog.V(2).Infof("Sending: %T, %s", job.m, c.clientid)
+
+		log.WithFields(log.Fields{
+			"clientID": c.sess.Clientid,
+			"msgType":  job.m,
+		}).Debug("sending msg")
 
 		// Disconnect msg is used for shutdown writer goroutine.
 		if _, ok := job.m.(*proto.Disconnect); ok {
-			glog.Warningf("writer: sent disconnect message")
+			log.Warn("writer: sent disconnect message")
 			return
 		}
 
 		// TODO: write timeout
-		err := job.m.Encode(c.conn)
+		err := job.m.Encode(c.Conn)
 
 		if err != nil {
-			glog.Warningf("writer error: ", err)
+			log.Warnf("writer error: ", err)
 			continue // Error does not shutdown Connection, wait re-connect
 		}
 		// if storedmsgid is set, (QoS 1 or 2) move to sentQueue
 		if job.storedmsgid != "" {
-			c.SendingMsgs.Get() // TODO: it ssumes Queue is FIFO
-			c.SentMsgs.Put(job.storedmsgid)
-			glog.V(2).Infof("msg %s is moved to SentMsgs", job.storedmsgid)
+			c.sess.SendingMsgs.Pop() // TODO: it assumes Queue is FIFO
+			c.sess.SentMsgs.Push(job.storedmsgid)
+
+			log.WithField("msgID", job.storedmsgid).Debug("msg moved to SentMsgs")
 		}
 
 		if job.r != nil {
@@ -353,97 +417,55 @@ func (c *Connection) Start() {
 	go c.writer()
 }
 
+//authorizeConn
+func (c *Connection) authorizeConn(m *proto.Connect) bool {
+
+	if !c.broker.AllowAnon() { //authorization required
+
+		if !m.UsernameFlag { //if no user name flag
+			return false
+		}
+
+		if !c.broker.Auth(m.Username, m.Password) { //if authorization failed
+			return false
+		}
+
+		c.sess.Username = m.Username
+		return true //auth success
+
+	} else { //authorization not required
+
+		if m.UsernameFlag { //optionally you can still authorize
+			if c.broker.Auth(m.Username, m.Password) == false {
+				return false //authoization attempt failed
+			} else {
+				c.sess.Username = m.Username //auth success
+				return true
+			}
+		}
+		return true //anonymous connection
+
+	}
+}
+
+//NewConnection
 func NewConnection(b *Broker, conn net.Conn) *Connection {
 	c := &Connection{
-		broker:      b,
-		conn:        conn,
-		storage:     b.storage,
-		jobs:        make(chan job, b.conf.Queue.SendingQueueLength),
-		Status:      ClientAvailable,
-		LastUpdated: time.Now(),
-		SendingMsgs: NewStoredQueue(b.conf.Queue.SendingQueueLength),
-		SentMsgs:    NewStoredQueue(b.conf.Queue.SentQueueLength),
-		//		out:      make(chan job, clientQueueLength),
-		//		Incoming: make(chan *proto.Publish, clientQueueLength),
-		//		done:     make(chan struct{}),
-		//		connack:  make(chan *proto.ConnAck),
-		//		suback:   make(chan *proto.SubAck),
+		broker: b,
+		Conn:   conn,
+		jobs:   make(chan job, b.conf.Queue.SendingQueueLength),
+		sess: &Session{
+			Status:      ClientAvailable,
+			LastUpdated: time.Now(),
+			SendingMsgs: NewStoredQueue(), //NewStoredQueue(b.conf.Queue.SendingQueueLength),
+			SentMsgs:    NewStoredQueue(), //NewStoredQueue(b.conf.Queue.SentQueueLength),
+			//		WillMsg:     &proto.Publish{},
+			//		out:      make(chan job, clientQueueLength),
+			//		Incoming: make(chan *proto.Publish, clientQueueLength),
+			//		done:     make(chan struct{}),
+			//		connack:  make(chan *proto.ConnAck),
+			//		suback:   make(chan *proto.SubAck),
+		},
 	}
 	return c
-}
-
-//
-// StoredQueue is a fixed length queue to store messages in a connection.
-//
-// XXX: should be usecontainer/list ?
-
-type storedQueueNode struct {
-	storedMsgId string
-	next        *storedQueueNode
-}
-
-type StoredQueue struct {
-	head  *storedQueueNode
-	tail  *storedQueueNode
-	count int
-	max   int
-	lock  *sync.Mutex
-}
-
-func NewStoredQueue(max int) *StoredQueue {
-	return &StoredQueue{
-		lock: &sync.Mutex{},
-		max:  max,
-	}
-}
-
-func (q *storedQueueNode) Next() *storedQueueNode {
-	return q.Next()
-}
-
-func (q *StoredQueue) Len() int {
-	q.lock.Lock()
-	defer q.lock.Unlock()
-
-	return q.count
-}
-
-func (q *StoredQueue) Put(storedMsgId string) {
-	q.lock.Lock()
-
-	n := &storedQueueNode{storedMsgId: storedMsgId}
-
-	if q.tail == nil {
-		q.tail = n
-		q.head = n
-	} else {
-		q.tail.next = n
-		q.tail = n
-	}
-	q.count++
-
-	if q.count > q.max {
-		q.lock.Unlock()
-		q.Get()
-		return
-	}
-	q.lock.Unlock()
-}
-func (q *StoredQueue) Get() string {
-	q.lock.Lock()
-	defer q.lock.Unlock()
-
-	n := q.head
-	if n == nil {
-		return ""
-	}
-
-	q.head = n.next
-
-	if q.head == nil {
-		q.tail = nil
-	}
-	q.count--
-
-	return n.storedMsgId
 }

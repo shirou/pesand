@@ -12,12 +12,25 @@ type Config struct {
 		Port             string
 		StatsIntervalSec time.Duration
 	}
+	Auth struct {
+		AllowAnonymous bool
+		JWTKey         string //for jwt auth
+		Username       string //for basic auth
+		Password       string //for basic auth
+		PasswordFile   string
+	}
 	Queue struct {
 		SendingQueueLength int
 		SentQueueLength    int
 	}
-	LevelDB struct {
+	BoltDB struct {
 		DBFile string
+	}
+	RethinkDB struct {
+		Url     string
+		Port    string
+		DbName  string
+		AuthKey string
 	}
 }
 

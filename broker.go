@@ -1,9 +1,10 @@
 package main
 
 import (
-	"github.com/golang/glog"
+	log "github.com/Sirupsen/logrus"
 	proto "github.com/huin/mqtt"
 	"net"
+	"sync"
 	"time"
 )
 
@@ -12,6 +13,9 @@ type Broker struct {
 	Port             string
 	stats            Stats
 	storage          Storage
+	auth             Authorize
+	clientsMu        sync.Mutex
+	clients          map[string]*Connection
 	conf             *Config
 	Done             chan struct{}
 	StatsIntervalSec time.Duration
@@ -22,7 +26,9 @@ func NewBroker(conf Config, listen net.Listener) *Broker {
 		listen:           listen,
 		Port:             conf.Default.Port,
 		stats:            NewStats(),
-		storage:          NewMemStorage(),
+		storage:          conf.ConfigStorage(),
+		auth:             conf.ConfigAuth(),
+		clients:          make(map[string]*Connection),
 		conf:             &conf,
 		Done:             make(chan struct{}),
 		StatsIntervalSec: time.Second * conf.Default.StatsIntervalSec,
@@ -31,22 +37,28 @@ func NewBroker(conf Config, listen net.Listener) *Broker {
 }
 
 // Auth auth
-// not implemented yet
 func (b *Broker) Auth(username string, password string) bool {
-	return true
+	return b.auth.Auth(username, password)
+}
+func (b *Broker) AllowAnon() bool {
+	return b.auth.AllowAnon()
 }
 
+//Start
 func (b *Broker) Start() {
-	glog.Infof("Broker started")
+
+	log.Info("Broker started")
 	go func() {
 		for {
 			conn, err := b.listen.Accept()
 			if err != nil {
-				glog.Infof("Accept: %v", err)
+				log.Warnf("Accept: %v", err)
 				break
 			}
+
 			c := NewConnection(b, conn)
 			c.Start()
+
 			b.stats.clientConnect()
 		}
 		close(b.Done)
@@ -70,13 +82,34 @@ func (b *Broker) Start() {
 
 }
 
+//Publish
 func (b *Broker) Publish(m *proto.Publish) {
 	topic := m.TopicName
 	topics, _ := ExpandTopics(topic)
 	for _, t := range topics {
+
 		go func(t string) {
-			for _, clientid := range b.storage.GetTopicClientList(t) {
-				conn := b.storage.GetClientConnection(clientid)
+
+			list, err := b.storage.GetTopicClientList(t)
+			if err != nil {
+				log.WithField("topic", t).
+					Error(err)
+			}
+
+			for _, clientid := range list {
+				//sess, err := b.storage.GetClientSession(clientid)
+				b.clientsMu.Lock()
+				conn, ok := b.clients[clientid]
+				for k, _ := range b.clients {
+					log.Println(k)
+				}
+				b.clientsMu.Unlock()
+
+				if !ok {
+					log.WithFields(log.Fields{"topic": t, "clientID": clientid}).
+						Error("clientsList conn not ok")
+					continue
+				}
 				conn.submit(m)
 				b.stats.messageSend()
 			}
@@ -84,26 +117,50 @@ func (b *Broker) Publish(m *proto.Publish) {
 	}
 }
 
+//UpdateRetain
 func (b *Broker) UpdateRetain(m *proto.Publish) {
 	topics, _ := ExpandTopics(m.TopicName)
 	for _, t := range topics {
-		b.storage.UpdateRetain(t, m)
+		err := b.storage.UpdateRetain(t, m)
+		if err != nil {
+			log.WithField("topic", t).
+				Errorf("UpdateRetain error %v", err)
+		}
 	}
 }
-func (b *Broker) GetRetain(topic string) (*proto.Publish, bool) {
-	m, ok := b.storage.GetRetain(topic)
-	return m, ok
+
+//GetRetain
+func (b *Broker) GetRetain(topic string) (*proto.Publish, error) {
+	m, err := b.storage.GetRetain(topic)
+	return m, err
 }
 
-func (b *Broker) Subscribe(topic string, conn *Connection) {
-	glog.Infof("Subscribe: %s on %s", topic, conn.clientid)
-	b.storage.Subscribe(topic, conn.clientid)
+//Subscribe
+func (b *Broker) Subscribe(topic string, sess *Session) {
+
+	log.WithFields(log.Fields{"topic": topic, "clientID": sess.Clientid}).
+		Info("Subscribe")
+
+	err := b.storage.Subscribe(topic, sess.Clientid)
+	if err != nil {
+		log.WithFields(log.Fields{"topic": topic, "clientID": sess.Clientid}).
+			Errorf("Subscribe error %v", err)
+	}
 }
 
-func (b *Broker) Unsubscribe(topic string, conn *Connection) {
-	glog.Infof("UnSubscribe: %s on %s", topic, conn.clientid)
+//Unsubscribe
+func (b *Broker) Unsubscribe(topic string, sess *Session) {
+
+	log.WithFields(log.Fields{"topic": topic, "clientID": sess.Clientid}).
+		Info("Unsubscribe")
+
 	topics, _ := ExpandTopics(topic)
 	for _, t := range topics {
-		b.storage.Unsubscribe(t, conn.clientid)
+		err := b.storage.Unsubscribe(t, sess.Clientid)
+		if err != nil {
+			log.WithFields(log.Fields{"topic": topic, "clientID": sess.Clientid}).
+				Errorf("Unsubscribe error %v", err)
+		}
+
 	}
 }

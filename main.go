@@ -2,7 +2,7 @@ package main
 
 import (
 	"flag"
-	"log"
+	log "github.com/Sirupsen/logrus"
 	"net"
 	"os"
 )
@@ -20,6 +20,15 @@ func main() {
 		os.Exit(1)
 	}
 
+	//set the logging level
+	lvl, err := log.ParseLevel(conf.Default.DebugLevel)
+	if err != nil {
+		log.Fatal("Log Level Parse Failed")
+		os.Exit(1)
+	}
+	log.SetLevel(lvl)
+
+	//listen
 	port := conf.Default.Port
 	listen, err := net.Listen("tcp", ":"+port)
 	if err != nil {
