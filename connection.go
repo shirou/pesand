@@ -481,7 +481,9 @@ type StoredQueue struct {
 }
 
 func NewStoredQueue() *StoredQueue {
-	return &StoredQueue{}
+	return &StoredQueue{
+		nodes: make([]string, 100),
+	}
 }
 
 // Push adds a node to the queue.
@@ -500,12 +502,12 @@ func (q *StoredQueue) Push(n string) {
 }
 
 // Pop removes and returns a node from the queue in first to last order.
-func (q *StoredQueue) Pop() string {
+func (q *StoredQueue) Pop() (string, error) {
 	if q.count == 0 {
-		return ""
+		return "", nil
 	}
 	node := q.nodes[q.head]
 	q.head = (q.head + 1) % len(q.nodes)
 	q.count--
-	return node
+	return node, nil
 }
